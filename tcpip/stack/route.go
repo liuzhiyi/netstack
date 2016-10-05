@@ -5,9 +5,9 @@
 package stack
 
 import (
+	"github.com/google/netstack/tcpip"
 	"github.com/google/netstack/tcpip/buffer"
 	"github.com/google/netstack/tcpip/header"
-	"github.com/google/netstack/tcpip"
 )
 
 // Route represents a route through the networking stack to a given destination.
@@ -64,6 +64,10 @@ func (r *Route) WritePacket(hdr *buffer.Prependable, payload buffer.View, protoc
 // MTU returns the MTU of the underlying network endpoint.
 func (r *Route) MTU() uint32 {
 	return r.ref.ep.MTU()
+}
+
+func (r *Route) ConcreteAddress() tcpip.Address {
+	return r.ref.concreteAddr
 }
 
 // Release frees all resources associated with the route.

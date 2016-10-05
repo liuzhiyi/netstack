@@ -5,12 +5,13 @@
 package stack
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
 	"github.com/google/netstack/ilist"
-	"github.com/google/netstack/tcpip/buffer"
 	"github.com/google/netstack/tcpip"
+	"github.com/google/netstack/tcpip/buffer"
 )
 
 // NIC represents a "network interface card" to which the networking stack is
@@ -93,7 +94,7 @@ func (n *NIC) addAddressLocked(protocol tcpip.NetworkProtocolNumber, addr tcpip.
 	}
 
 	// Create the new network endpoint.
-	ep, err := netProto.NewEndpoint(n.id, addr, n, n.linkEP)
+	ep, err := netProto.NewEndpoint(n.id, addr, "", n, n.linkEP)
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +130,51 @@ func (n *NIC) AddAddress(protocol tcpip.NetworkProtocolNumber, addr tcpip.Addres
 	n.mu.Lock()
 	_, err := n.addAddressLocked(protocol, addr, false)
 	n.mu.Unlock()
+
+	return err
+}
+
+// AddMulticastAddress adds a new address to n, so that it starts accepting packets
+// targeted at the given address (and network protocol).
+func (n *NIC) AddMulticastAddress(protocol tcpip.NetworkProtocolNumber, multicast, addr tcpip.Address) error {
+	// Add the endpoint.
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	netProto, ok := n.stack.networkProtocols[protocol]
+	if !ok {
+		return tcpip.ErrUnknownProtocol
+	}
+
+	// Create the new network endpoint.
+	ep, err := netProto.NewEndpoint(n.id, multicast, addr, n, n.linkEP)
+	if err != nil {
+		return err
+	}
+
+	id := *ep.ID()
+	if _, ok := n.endpoints[id]; ok {
+		return tcpip.ErrDuplicateAddress
+	}
+
+	ref := &referencedNetworkEndpoint{
+		refs:           1,
+		ep:             ep,
+		nic:            n,
+		protocol:       protocol,
+		holdsInsertRef: true,
+		concreteAddr:   addr,
+	}
+
+	n.endpoints[id] = ref
+
+	l, ok := n.primary[protocol]
+	if !ok {
+		l = &ilist.List{}
+		n.primary[protocol] = l
+	}
+
+	l.PushBack(ref)
 
 	return err
 }
@@ -184,11 +230,13 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, protocol tcpip.NetworkPr
 	}
 
 	if len(v) < netProto.MinimumPacketSize() {
+		fmt.Printf("nic.go: len(v)=%d < netProto.MinimumPacketSize()=%d\n", len(v), netProto.MinimumPacketSize())
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
 
 	src, dst := netProto.ParseAddresses(v)
+	fmt.Printf("DeliverNetworkPacket: dst=%v\n", dst)
 	id := NetworkEndpointID{dst}
 
 	n.mu.RLock()
@@ -227,6 +275,7 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, protocol tcpip.NetworkPr
 // DeliverTransportPacket delivers the packets to the appropriate transport
 // protocol endpoint.
 func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, v buffer.View) {
+	fmt.Printf("DeliverTransportPacket, protocol=%v\n", protocol)
 	state, ok := n.stack.transportProtocols[protocol]
 	if !ok {
 		atomic.AddUint64(&n.stack.stats.UnknownProtocolRcvdPackets, 1)
@@ -235,12 +284,14 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 
 	transProto := state.proto
 	if len(v) < transProto.MinimumPacketSize() {
+		fmt.Printf("nic.go: len(v)=%d < transProto.MinimumPacketSize()=%d\n", len(v), transProto.MinimumPacketSize())
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
 
 	srcPort, dstPort, err := transProto.ParsePorts(v)
 	if err != nil {
+		fmt.Printf("nic.go: could not ParsePorts: %v\n", err)
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
@@ -271,10 +322,11 @@ func (n *NIC) ID() tcpip.NICID {
 type referencedNetworkEndpoint struct {
 	ilist.Entry
 
-	refs     int32
-	ep       NetworkEndpoint
-	nic      *NIC
-	protocol tcpip.NetworkProtocolNumber
+	refs         int32
+	ep           NetworkEndpoint
+	nic          *NIC
+	protocol     tcpip.NetworkProtocolNumber
+	concreteAddr tcpip.Address // address answering a multicast packet
 
 	// holdsInsertRef is protected by the NIC's mutex. It indicates whether
 	// the reference count is biased by 1 due to the insertion of the

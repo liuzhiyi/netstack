@@ -11,10 +11,12 @@
 package ipv6
 
 import (
+	"fmt"
+
+	"github.com/google/netstack/tcpip"
 	"github.com/google/netstack/tcpip/buffer"
 	"github.com/google/netstack/tcpip/header"
 	"github.com/google/netstack/tcpip/stack"
-	"github.com/google/netstack/tcpip"
 )
 
 const (
@@ -34,15 +36,20 @@ type address [header.IPv6AddressSize]byte
 type endpoint struct {
 	nicid      tcpip.NICID
 	id         stack.NetworkEndpointID
-	address    address
+	address    address // may be multi-cast
 	linkEP     stack.LinkEndpoint
 	dispatcher stack.TransportDispatcher
 }
 
-func newEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) *endpoint {
+func newEndpoint(nicid tcpip.NICID, addr, concreteAddr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) *endpoint {
 	e := &endpoint{nicid: nicid, linkEP: linkEP, dispatcher: dispatcher}
-	copy(e.address[:], addr)
-	e.id = stack.NetworkEndpointID{tcpip.Address(e.address[:])}
+	if concreteAddr == "" {
+		copy(e.address[:], addr)
+		e.id = stack.NetworkEndpointID{tcpip.Address(e.address[:])}
+	} else {
+		copy(e.address[:], concreteAddr)
+		e.id = stack.NetworkEndpointID{tcpip.Address([]byte(addr))}
+	}
 	return e
 }
 
@@ -79,10 +86,15 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 		length += uint16(len(payload))
 	}
 	ip := header.IPv6(hdr.Prepend(header.IPv6MinimumSize))
+	fmt.Printf("ipv6.WritePacket, SrcAddr=%v, DstAddr=%v\n", tcpip.Address(e.address[:]), r.RemoteAddress)
+	hopLimit := uint8(65)
+	if protocol == header.ICMPv6ProtocolNumber {
+		hopLimit = 255
+	}
 	ip.Encode(&header.IPv6Fields{
 		PayloadLength: length,
 		NextHeader:    uint8(protocol),
-		HopLimit:      65,
+		HopLimit:      hopLimit,
 		SrcAddr:       tcpip.Address(e.address[:]),
 		DstAddr:       r.RemoteAddress,
 	})
@@ -93,6 +105,7 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 // HandlePacket is called by the link layer when new ipv6 packets arrive for
 // this endpoint.
 func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
+	fmt.Printf("ipv6.HandlePacket\n")
 	h := header.IPv6(v)
 	if !h.IsValid() {
 		return
@@ -130,8 +143,8 @@ func (*protocol) ParseAddresses(v buffer.View) (src, dst tcpip.Address) {
 }
 
 // NewEndpoint creates a new ipv6 endpoint.
-func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) (stack.NetworkEndpoint, error) {
-	return newEndpoint(nicid, addr, dispatcher, linkEP), nil
+func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr, concreteAddr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) (stack.NetworkEndpoint, error) {
+	return newEndpoint(nicid, addr, concreteAddr, dispatcher, linkEP), nil
 }
 
 func init() {

@@ -7,8 +7,8 @@ package stack
 import (
 	"sync"
 
-	"github.com/google/netstack/tcpip/buffer"
 	"github.com/google/netstack/tcpip"
+	"github.com/google/netstack/tcpip/buffer"
 )
 
 // transportEndpoints manages all endpoints of a given protocol. It has its own

@@ -122,7 +122,7 @@ type NetworkProtocol interface {
 	ParseAddresses(v buffer.View) (src, dst tcpip.Address)
 
 	// NewEndpoint creates a new endpoint of this protocol.
-	NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher TransportDispatcher, sender LinkEndpoint) (NetworkEndpoint, error)
+	NewEndpoint(nicid tcpip.NICID, addr, concreteAddr tcpip.Address, dispatcher TransportDispatcher, sender LinkEndpoint) (NetworkEndpoint, error)
 }
 
 // NetworkDispatcher contains the methods used by the network stack to deliver
