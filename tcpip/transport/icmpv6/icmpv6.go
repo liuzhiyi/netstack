@@ -291,21 +291,21 @@ func process(p *icmpPacket) {
 		copy(v[22:], OurMAC[:])
 		//fmt.Printf("icmpv6 r.LocalAddress=...:%02x%02x\n", r.LocalAddress[14], r.LocalAddress[15])
 		//fmt.Printf("icmpv6 r.RemoteAddress=...:%02x%02x\n", r.RemoteAddress[14], r.RemoteAddress[15])
-		if addr := r.ConcreteAddress(); addr != "" {
+		/*if addr := r.ConcreteAddress(); addr != "" {
 			r2 := *r
 			r2.LocalAddress = addr
 			r = &r2
-		}
+		}*/
 		sendICMPv6(r, header.NeighborAdvertisements, 0, v)
 	case header.EchoRequest:
 		origv := v
 		v := make(buffer.View, len(origv)-4)
 		copy(v, origv[4:])
-		if addr := r.ConcreteAddress(); addr != "" {
+		/*if addr := r.ConcreteAddress(); addr != "" {
 			r2 := *r
 			r2.LocalAddress = addr
 			r = &r2
-		}
+		}*/
 		sendICMPv6(r, header.EchoReply, 0, v)
 	}
 }

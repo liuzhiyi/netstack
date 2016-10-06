@@ -27,6 +27,7 @@ type NIC struct {
 	promiscuous bool
 	primary     map[tcpip.NetworkProtocolNumber]*ilist.List
 	endpoints   map[NetworkEndpointID]*referencedNetworkEndpoint
+	multicast   map[NetworkEndpointID][]NetworkEndpointID
 }
 
 func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint) *NIC {
@@ -37,6 +38,7 @@ func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint) *NIC {
 		demux:     newTransportDemuxer(stack),
 		primary:   make(map[tcpip.NetworkProtocolNumber]*ilist.List),
 		endpoints: make(map[NetworkEndpointID]*referencedNetworkEndpoint),
+		multicast: make(map[NetworkEndpointID][]NetworkEndpointID),
 	}
 }
 
@@ -134,49 +136,19 @@ func (n *NIC) AddAddress(protocol tcpip.NetworkProtocolNumber, addr tcpip.Addres
 	return err
 }
 
-// AddMulticastAddress adds a new address to n, so that it starts accepting packets
-// targeted at the given address (and network protocol).
-func (n *NIC) AddMulticastAddress(protocol tcpip.NetworkProtocolNumber, multicast, addr tcpip.Address) error {
-	// Add the endpoint.
+// AddMulticastAddress TODO
+func (n *NIC) AddMulticastAddress(multicast, addr tcpip.Address) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	netProto, ok := n.stack.networkProtocols[protocol]
-	if !ok {
-		return tcpip.ErrUnknownProtocol
+	id := NetworkEndpointID{addr}
+	if _, found := n.endpoints[id]; !found {
+		return tcpip.ErrBadLocalAddress
 	}
+	multiID := NetworkEndpointID{multicast}
+	n.multicast[multiID] = append(n.multicast[multiID], id)
 
-	// Create the new network endpoint.
-	ep, err := netProto.NewEndpoint(n.id, multicast, addr, n, n.linkEP)
-	if err != nil {
-		return err
-	}
-
-	id := *ep.ID()
-	if _, ok := n.endpoints[id]; ok {
-		return tcpip.ErrDuplicateAddress
-	}
-
-	ref := &referencedNetworkEndpoint{
-		refs:           1,
-		ep:             ep,
-		nic:            n,
-		protocol:       protocol,
-		holdsInsertRef: true,
-		concreteAddr:   addr,
-	}
-
-	n.endpoints[id] = ref
-
-	l, ok := n.primary[protocol]
-	if !ok {
-		l = &ilist.List{}
-		n.primary[protocol] = l
-	}
-
-	l.PushBack(ref)
-
-	return err
+	return nil
 }
 
 func (n *NIC) removeEndpointLocked(r *referencedNetworkEndpoint) {
@@ -219,6 +191,9 @@ func (n *NIC) RemoveAddress(addr tcpip.Address) error {
 	return nil
 }
 
+func (n *NIC) deliverMulticastPacket(v buffer.View) {
+}
+
 // DeliverNetworkPacket finds the appropriate network protocol endpoint and
 // hands the packet over for further processing. This function is called when
 // the NIC receives a packet from the physical interface.
@@ -239,15 +214,31 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, protocol tcpip.NetworkPr
 	fmt.Printf("DeliverNetworkPacket: dst=%v\n", dst)
 	id := NetworkEndpointID{dst}
 
+	var multirefs []*referencedNetworkEndpoint
+
+	// Look for a matching endpoint.
+	// If we don't find one, look to see if this is a multicast address.
+	// If it is we need to let each relevant address handle the packet.
 	n.mu.RLock()
 	ref := n.endpoints[id]
 	if ref != nil && !ref.tryIncRef() {
 		ref = nil
 	}
+	if ref == nil {
+		ids := n.multicast[id]
+		multirefs = make([]*referencedNetworkEndpoint, len(ids))
+		for i, id := range ids {
+			mref := n.endpoints[id]
+			if mref == nil || !mref.tryIncRef() {
+				continue
+			}
+			multirefs[i] = mref
+		}
+	}
 	promiscuous := n.promiscuous
 	n.mu.RUnlock()
 
-	if ref == nil && promiscuous {
+	if ref == nil && len(multirefs) == 0 && promiscuous {
 		// Try again with the lock in exclusive mode. If we still can't
 		// get the endpoint, create a new "temporary" one. It will only
 		// exist while there's a route through it.
@@ -262,14 +253,20 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, protocol tcpip.NetworkPr
 		n.mu.Unlock()
 	}
 
-	if ref == nil {
+	if ref != nil {
+		r := makeRoute(protocol, dst, src, ref)
+		ref.ep.HandlePacket(&r, v)
+		ref.decRef()
+	} else if len(multirefs) > 0 {
+		for _, ref := range multirefs {
+			dst := ref.ep.ID().LocalAddress
+			r := makeRoute(protocol, dst, src, ref)
+			ref.ep.HandlePacket(&r, v)
+			ref.decRef()
+		}
+	} else {
 		atomic.AddUint64(&n.stack.stats.UnknownNetworkEndpointRcvdPackets, 1)
-		return
 	}
-
-	r := makeRoute(protocol, dst, src, ref)
-	ref.ep.HandlePacket(&r, v)
-	ref.decRef()
 }
 
 // DeliverTransportPacket delivers the packets to the appropriate transport

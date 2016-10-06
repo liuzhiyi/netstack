@@ -287,7 +287,8 @@ type Stack interface {
 	// AddAddress adds a new network-layer address to the specified NIC.
 	AddAddress(id NICID, protocol NetworkProtocolNumber, addr Address) error
 
-	AddMulticastAddress(id NICID, protocol NetworkProtocolNumber, multicast, addr Address) error
+	// AddMulticastAddress TODO
+	AddMulticastAddress(id NICID, multicast, addr Address) error
 
 	// Stats returns a snapshot of the current stats.
 	Stats() Stats

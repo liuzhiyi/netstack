@@ -190,7 +190,7 @@ func (s *Stack) AddAddress(id tcpip.NICID, protocol tcpip.NetworkProtocolNumber,
 }
 
 // AddMulticastAddress adds a new multicast network-layer address to the specified NIC.
-func (s *Stack) AddMulticastAddress(id tcpip.NICID, protocol tcpip.NetworkProtocolNumber, multicast, addr tcpip.Address) error {
+func (s *Stack) AddMulticastAddress(id tcpip.NICID, multicast, addr tcpip.Address) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -199,7 +199,7 @@ func (s *Stack) AddMulticastAddress(id tcpip.NICID, protocol tcpip.NetworkProtoc
 		return tcpip.ErrUnknownNICID
 	}
 
-	return nic.AddMulticastAddress(protocol, multicast, addr)
+	return nic.AddMulticastAddress(multicast, addr)
 }
 
 // RemoveAddress removes an existing network-layer address from the specified
