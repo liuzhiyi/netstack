@@ -5,6 +5,7 @@
 package stack
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/google/netstack/tcpip"
@@ -84,6 +85,7 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 
 	// Try to find a match with the id as provided.
 	if ep := eps.endpoints[id]; ep != nil {
+		fmt.Println("match with the id as provided")
 		ep.HandlePacket(r, id, v)
 		return true
 	}
@@ -93,6 +95,7 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 
 	nid.LocalAddress = ""
 	if ep := eps.endpoints[nid]; ep != nil {
+		fmt.Println("match with the id minus the local address")
 		ep.HandlePacket(r, id, v)
 		return true
 	}
@@ -102,6 +105,7 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 	nid.RemoteAddress = ""
 	nid.RemotePort = 0
 	if ep := eps.endpoints[nid]; ep != nil {
+		fmt.Println("match with the id minus the remote part")
 		ep.HandlePacket(r, id, v)
 		return true
 	}
@@ -109,6 +113,7 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 	// Try to find a match with only the local port.
 	nid.LocalAddress = ""
 	if ep := eps.endpoints[nid]; ep != nil {
+		fmt.Println("match with onlyt the local port")
 		ep.HandlePacket(r, id, v)
 		return true
 	}

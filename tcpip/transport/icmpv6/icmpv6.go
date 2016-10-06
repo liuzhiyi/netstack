@@ -12,6 +12,7 @@ import (
 	"github.com/google/netstack/tcpip"
 	"github.com/google/netstack/tcpip/buffer"
 	"github.com/google/netstack/tcpip/header"
+	"github.com/google/netstack/tcpip/network/ipv6"
 	"github.com/google/netstack/tcpip/stack"
 	"github.com/google/netstack/waiter"
 )
@@ -22,12 +23,10 @@ const (
 	ProtocolNumber tcpip.TransportProtocolNumber = 58
 )
 
-// TODO: ilist generator
-
 type icmpPacket struct {
 	icmpPacketEntry
-	senderAddress tcpip.FullAddress
-	view          buffer.View
+	route *stack.Route
+	view  buffer.View
 }
 
 type protocol struct{}
@@ -71,11 +70,12 @@ type endpoint struct {
 	netProto    tcpip.NetworkProtocolNumber
 	waiterQueue *waiter.Queue
 
-	rcvMu      sync.Mutex
-	rcvReady   bool
-	rcvList    icmpPacketList
-	rcvBufSize int
-	rcvClosed  bool
+	rcvMu         sync.Mutex
+	rcvReady      bool
+	rcvList       icmpPacketList
+	rcvBufSizeMax int
+	rcvBufSize    int
+	rcvClosed     bool
 
 	mu        sync.RWMutex
 	id        stack.TransportEndpointID
@@ -88,41 +88,24 @@ type endpoint struct {
 func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
 	// TODO: Use the send buffer size initialized here.
 	return &endpoint{
-		stack:       stack,
-		netProto:    netProto,
-		waiterQueue: waiterQueue,
+		stack:         stack,
+		netProto:      netProto,
+		waiterQueue:   waiterQueue,
+		rcvBufSizeMax: 32 * 1024, // TODO: too big
 	}
 }
 
 func (e *endpoint) Close() {
 }
+
 func (e *endpoint) Read(addr *tcpip.FullAddress) (buffer.View, error) {
-	e.rcvMu.Lock()
-
-	if e.rcvList.Empty() {
-		err := tcpip.ErrWouldBlock
-		if e.rcvClosed {
-			err = tcpip.ErrClosedForReceive
-		}
-		e.rcvMu.Unlock()
-		return buffer.View{}, err
-	}
-
-	p := e.rcvList.Front()
-	e.rcvList.Remove(p)
-	e.rcvBufSize -= len(p.view)
-
-	e.rcvMu.Unlock()
-
-	if addr != nil {
-		*addr = p.senderAddress
-	}
-
-	return p.view, nil
+	return nil, tcpip.ErrNotSupported
 }
+
 func (e *endpoint) Write(v buffer.View, to *tcpip.FullAddress) (uintptr, error) {
-	panic("TODO icmpv6.Write")
+	return 0, tcpip.ErrNotSupported
 }
+
 func (e *endpoint) SendMsg(v buffer.View, c tcpip.ControlMessages, to *tcpip.FullAddress) (uintptr, error) {
 	// Reject control messages.
 	if c != nil {
@@ -264,36 +247,56 @@ func sendICMPv6(r *stack.Route, typ header.ICMPv6Type, code byte, data buffer.Vi
 
 	fmt.Printf("send ICMPv6: len(hdr.UsedBytes())=%d\n", len(hdr.UsedBytes()))
 
+	// TODO: instead of returning an ignored error, collect a stat
 	return r.WritePacket(&hdr, data, ProtocolNumber)
+}
+
+func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, v buffer.View) {
+	e.rcvMu.Lock()
+	if !e.rcvReady || e.rcvClosed || e.rcvBufSize >= e.rcvBufSizeMax {
+		// Drop packet if our buffer is currently full.
+		e.rcvMu.Unlock()
+		return
+	}
+	wasEmpty := e.rcvBufSize == 0
+	e.rcvList.PushBack(&icmpPacket{
+		route: r,
+		view:  v,
+	})
+	e.rcvBufSize += len(v)
+	e.rcvMu.Unlock()
+
+	if wasEmpty {
+		e.waiterQueue.Notify(waiter.EventIn)
+	}
 }
 
 var OurMAC [6]byte // HACK!
 
-func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, v buffer.View) {
+func process(p *icmpPacket) {
+	r := p.route
+	v := p.view
 	h := header.ICMPv6(v)
 	fmt.Printf("icmpv6.HandlePacket: len(v)=%d, type=%d, code=%d\n", len(v), h.Type(), h.Code())
 
 	switch h.Type() {
 	case header.NeighborSolicitation:
-		origv := v
-		// TODO: queues and stuff
-		v := make(buffer.View, 4+16+2+len(OurMAC))
+		targetAddress := v[8:24]
+		v := make(buffer.View, 4+len(targetAddress)+2+len(OurMAC))
 		v[0] |= 1 << 6 // Solicited flag
 		v[0] |= 1 << 5 // Override flag
-		copy(v[4:20], origv[8:24])
+		copy(v[4:], targetAddress)
 		v[20] = 2 // Target Link-layer Address
 		v[21] = 1
 		copy(v[22:], OurMAC[:])
-		fmt.Printf("icmpv6 r.LocalAddress=...:%02x%02x\n", r.LocalAddress[14], r.LocalAddress[15])
-		fmt.Printf("icmpv6 r.RemoteAddress=...:%02x%02x\n", r.RemoteAddress[14], r.RemoteAddress[15])
+		//fmt.Printf("icmpv6 r.LocalAddress=...:%02x%02x\n", r.LocalAddress[14], r.LocalAddress[15])
+		//fmt.Printf("icmpv6 r.RemoteAddress=...:%02x%02x\n", r.RemoteAddress[14], r.RemoteAddress[15])
 		if addr := r.ConcreteAddress(); addr != "" {
 			r2 := *r
 			r2.LocalAddress = addr
 			r = &r2
 		}
-		if err := sendICMPv6(r, header.NeighborAdvertisements, 0, v); err != nil {
-			fmt.Printf("icmpv6 failed to write packet: %v\n", err)
-		}
+		sendICMPv6(r, header.NeighborAdvertisements, 0, v)
 	case header.EchoRequest:
 		origv := v
 		v := make(buffer.View, len(origv)-4)
@@ -304,5 +307,47 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, v 
 			r = &r2
 		}
 		sendICMPv6(r, header.EchoReply, 0, v)
+	}
+}
+
+func Process(s *stack.Stack) error {
+	proto := ipv6.ProtocolNumber
+	var wq waiter.Queue
+	ep, err := s.NewEndpoint(ProtocolNumber, proto, &wq)
+	if err != nil {
+		return err
+	}
+	s.SetTransportProtocolHandler(ProtocolNumber, func(r *stack.Route, id stack.TransportEndpointID, v buffer.View) bool {
+		ep.(stack.TransportEndpoint).HandlePacket(r, id, v)
+		return true
+	})
+
+	defer ep.Close()
+
+	if err := ep.Bind(tcpip.FullAddress{0, "", 0}, nil); err != nil {
+		return err
+	}
+
+	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
+	wq.EventRegister(&waitEntry, waiter.EventIn)
+	defer wq.EventUnregister(&waitEntry)
+
+	e := ep.(*endpoint)
+	for {
+		e.rcvMu.Lock()
+		if e.rcvList.Empty() {
+			e.rcvMu.Unlock()
+			if e.rcvClosed {
+				return tcpip.ErrClosedForReceive
+			}
+			<-notifyCh
+			continue
+		}
+		p := e.rcvList.Front()
+		e.rcvList.Remove(p)
+		e.rcvBufSize -= len(p.view)
+		e.rcvMu.Unlock()
+
+		process(p)
 	}
 }
