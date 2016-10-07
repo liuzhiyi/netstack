@@ -271,8 +271,6 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, v 
 	}
 }
 
-var OurMAC [6]byte // HACK!
-
 func process(p *icmpPacket) {
 	r := p.route
 	v := p.view
@@ -282,15 +280,15 @@ func process(p *icmpPacket) {
 	switch h.Type() {
 	case header.NeighborSolicitation:
 		targetAddress := v[8:24]
-		v := make(buffer.View, 4+len(targetAddress)+2+len(OurMAC))
+		v := make(buffer.View, 4+len(targetAddress)+2+len(r.LocalLinkAddress))
 		v[0] |= 1 << 6 // Solicited flag
 		v[0] |= 1 << 5 // Override flag
 		copy(v[4:], targetAddress)
+
 		v[20] = 2 // Target Link-layer Address
 		v[21] = 1
-		copy(v[22:], OurMAC[:])
-		//fmt.Printf("icmpv6 r.LocalAddress=...:%02x%02x\n", r.LocalAddress[14], r.LocalAddress[15])
-		//fmt.Printf("icmpv6 r.RemoteAddress=...:%02x%02x\n", r.RemoteAddress[14], r.RemoteAddress[15])
+		copy(v[22:], r.LocalLinkAddress[:])
+
 		sendICMPv6(r, header.NeighborAdvertisements, 0, v)
 	case header.EchoRequest:
 		sendICMPv6(r, header.EchoReply, 0, v[4:])

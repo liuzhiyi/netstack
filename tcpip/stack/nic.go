@@ -198,7 +198,7 @@ func (n *NIC) deliverMulticastPacket(v buffer.View) {
 // DeliverNetworkPacket finds the appropriate network protocol endpoint and
 // hands the packet over for further processing. This function is called when
 // the NIC receives a packet from the physical interface.
-func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, protocol tcpip.NetworkProtocolNumber, v buffer.View) {
+func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr [6]byte, protocol tcpip.NetworkProtocolNumber, v buffer.View) {
 	netProto, ok := n.stack.networkProtocols[protocol]
 	if !ok {
 		atomic.AddUint64(&n.stack.stats.UnknownProtocolRcvdPackets, 1)
@@ -254,14 +254,23 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, protocol tcpip.NetworkPr
 		n.mu.Unlock()
 	}
 
+	r := Route{
+		NetProto:          protocol,
+		LocalLinkAddress:  linkAddr,
+		RemoteAddress:     src,
+		RemoteLinkAddress: srcLinkAddr,
+	}
+
 	if ref != nil {
-		r := makeRoute(protocol, dst, src, ref)
+		r.LocalAddress = dst
+		r.ref = ref
 		ref.ep.HandlePacket(&r, v)
 		ref.decRef()
 	} else if len(multirefs) > 0 {
 		for _, ref := range multirefs {
 			dst := ref.ep.ID().LocalAddress
-			r := makeRoute(protocol, dst, src, ref)
+			r.ref = ref
+			r.LocalAddress = dst
 			ref.ep.HandlePacket(&r, v)
 			ref.decRef()
 		}
