@@ -66,10 +66,6 @@ func (r *Route) MTU() uint32 {
 	return r.ref.ep.MTU()
 }
 
-func (r *Route) ConcreteAddress() tcpip.Address {
-	return r.ref.concreteAddr
-}
-
 // Release frees all resources associated with the route.
 func (r *Route) Release() {
 	if r.ref != nil {

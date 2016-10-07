@@ -96,7 +96,7 @@ func (n *NIC) addAddressLocked(protocol tcpip.NetworkProtocolNumber, addr tcpip.
 	}
 
 	// Create the new network endpoint.
-	ep, err := netProto.NewEndpoint(n.id, addr, "", n, n.linkEP)
+	ep, err := netProto.NewEndpoint(n.id, addr, n, n.linkEP)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,8 @@ func (n *NIC) AddAddress(protocol tcpip.NetworkProtocolNumber, addr tcpip.Addres
 	return err
 }
 
-// AddMulticastAddress TODO
+// AddMulticastAddress adds a new multicast address to n. Any packet sent to
+// multicast is handled by addr.
 func (n *NIC) AddMulticastAddress(multicast, addr tcpip.Address) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -319,11 +320,10 @@ func (n *NIC) ID() tcpip.NICID {
 type referencedNetworkEndpoint struct {
 	ilist.Entry
 
-	refs         int32
-	ep           NetworkEndpoint
-	nic          *NIC
-	protocol     tcpip.NetworkProtocolNumber
-	concreteAddr tcpip.Address // address answering a multicast packet
+	refs     int32
+	ep       NetworkEndpoint
+	nic      *NIC
+	protocol tcpip.NetworkProtocolNumber
 
 	// holdsInsertRef is protected by the NIC's mutex. It indicates whether
 	// the reference count is biased by 1 due to the insertion of the

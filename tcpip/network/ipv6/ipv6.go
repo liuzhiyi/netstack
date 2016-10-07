@@ -41,15 +41,10 @@ type endpoint struct {
 	dispatcher stack.TransportDispatcher
 }
 
-func newEndpoint(nicid tcpip.NICID, addr, concreteAddr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) *endpoint {
+func newEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) *endpoint {
 	e := &endpoint{nicid: nicid, linkEP: linkEP, dispatcher: dispatcher}
-	if concreteAddr == "" {
-		copy(e.address[:], addr)
-		e.id = stack.NetworkEndpointID{tcpip.Address(e.address[:])}
-	} else {
-		copy(e.address[:], concreteAddr)
-		e.id = stack.NetworkEndpointID{tcpip.Address([]byte(addr))}
-	}
+	copy(e.address[:], addr)
+	e.id = stack.NetworkEndpointID{tcpip.Address(e.address[:])}
 	return e
 }
 
@@ -143,8 +138,8 @@ func (*protocol) ParseAddresses(v buffer.View) (src, dst tcpip.Address) {
 }
 
 // NewEndpoint creates a new ipv6 endpoint.
-func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr, concreteAddr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) (stack.NetworkEndpoint, error) {
-	return newEndpoint(nicid, addr, concreteAddr, dispatcher, linkEP), nil
+func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) (stack.NetworkEndpoint, error) {
+	return newEndpoint(nicid, addr, dispatcher, linkEP), nil
 }
 
 func init() {
