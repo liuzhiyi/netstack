@@ -246,6 +246,8 @@ func (s *Stack) FindRoute(id tcpip.NICID, localAddr, remoteAddr tcpip.Address, n
 		return makeRoute(netProto, ref.ep.ID().LocalAddress, remoteAddr, ref), nil
 	}
 
+	// TODO: send ARP request
+
 	return Route{}, tcpip.ErrNoRoute
 }
 

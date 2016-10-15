@@ -106,6 +106,9 @@ type NetworkEndpoint interface {
 	HandlePacket(r *Route, v buffer.View)
 }
 
+type NeighborDiscovery interface {
+}
+
 // NetworkProtocol is the interface that needs to be implemented by network
 // protocols (e.g., ipv4, ipv6) that want to be part of the networking stack.
 type NetworkProtocol interface {
@@ -122,7 +125,7 @@ type NetworkProtocol interface {
 	ParseAddresses(v buffer.View) (src, dst tcpip.Address)
 
 	// NewEndpoint creates a new endpoint of this protocol.
-	NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher TransportDispatcher, sender LinkEndpoint) (NetworkEndpoint, error)
+	NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher TransportDispatcher, sender LinkEndpoint, s *Stack) (NetworkEndpoint, error)
 }
 
 // NetworkDispatcher contains the methods used by the network stack to deliver
