@@ -82,6 +82,7 @@ type endpoint struct {
 	bindNICID tcpip.NICID
 	bindAddr  tcpip.Address
 	regNICID  tcpip.NICID
+	route     stack.Route
 }
 
 func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) *endpoint {
@@ -95,6 +96,26 @@ func newEndpoint(stack *stack.Stack, netProto tcpip.NetworkProtocolNumber, waite
 }
 
 func (e *endpoint) Close() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	switch e.state {
+	case stateBound, stateConnected:
+		e.stack.UnregisterTransportBroadcastEndpoint(e.regNICID, ProtocolNumber, e)
+	}
+
+	// Close the receive list and drain it.
+	e.rcvMu.Lock()
+	e.rcvClosed = true
+	e.rcvBufSize = 0
+	for !e.rcvList.Empty() {
+		p := e.rcvList.Front()
+		e.rcvList.Remove(p)
+	}
+	e.rcvMu.Unlock()
+
+	e.route.Release()
+	e.state = stateClosed
 }
 
 func (e *endpoint) Read(addr *tcpip.FullAddress) (buffer.View, error) {
@@ -123,8 +144,50 @@ func (e *endpoint) GetSockOpt(opt interface{}) error {
 	return tcpip.ErrInvalidEndpointState
 }
 func (e *endpoint) Connect(addr tcpip.FullAddress) error {
-	panic("TODO icmpv4.Connect")
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	nicid := addr.NIC
+	switch e.state {
+	case stateBound:
+		if e.bindNICID == 0 {
+			break
+		}
+		if nicid != 0 && nicid != e.bindNICID {
+			return tcpip.ErrInvalidEndpointState
+		}
+		nicid = e.bindNICID
+	case stateInitial:
+	case stateConnected:
+		return tcpip.ErrAlreadyConnected
+	default:
+		return tcpip.ErrInvalidEndpointState
+	}
+
+	r, err := e.stack.FindRoute(nicid, e.id.LocalAddress, addr.Addr, e.netProto)
+	if err != nil {
+		return err
+	}
+	defer r.Release()
+
+	e.id.LocalAddress = r.LocalAddress
+	e.id.RemoteAddress = addr.Addr
+
+	if _, err = e.registerWithStack(nicid, e.id); err != nil {
+		return err
+	}
+
+	e.state = stateConnected
+	e.route = r.Clone()
+	e.bindNICID = nicid
+
+	e.rcvMu.Lock()
+	e.rcvReady = true
+	e.rcvMu.Unlock()
+
+	return nil
 }
+
 func (*endpoint) ConnectEndpoint(tcpip.Endpoint) error {
 	return tcpip.ErrInvalidEndpointState
 }
@@ -143,7 +206,8 @@ func (e *endpoint) RecvMsg(addr *tcpip.FullAddress) (buffer.View, tcpip.ControlM
 }
 
 func (e *endpoint) registerWithStack(nicid tcpip.NICID, id stack.TransportEndpointID) (stack.TransportEndpointID, error) {
-	err := e.stack.RegisterTransportEndpoint(nicid, ProtocolNumber, id, e)
+	// TODO remove id param
+	err := e.stack.RegisterTransportBroadcastEndpoint(nicid, ProtocolNumber, e)
 	return id, err
 }
 
@@ -169,7 +233,7 @@ func (e *endpoint) bindLocked(addr tcpip.FullAddress, commit func() error) error
 	if commit != nil {
 		if err := commit(); err != nil {
 			// Unregister, the commit failed.
-			e.stack.UnregisterTransportEndpoint(addr.NIC, ProtocolNumber, id)
+			e.stack.UnregisterTransportBroadcastEndpoint(addr.NIC, ProtocolNumber, e)
 			return err
 		}
 	}
@@ -269,6 +333,8 @@ func process(p *icmpPacket) {
 	switch h.Type() {
 	case header.ICMPv4Echo:
 		sendICMPv4(r, header.ICMPv4EchoReply, 0, v[4:])
+	case header.ICMPv4EchoReply:
+		fmt.Printf("\tgot header.ICMPv4EchoReply\n")
 	}
 }
 
@@ -311,4 +377,16 @@ func Process(s *stack.Stack) error {
 
 		process(p)
 	}
+}
+
+func Ping(ep tcpip.Endpoint) {
+	e := ep.(*endpoint)
+
+	v := buffer.NewView(4)
+	v[0] = 42 // Identifier
+	v[1] = 42 // Identifier
+	v[2] = 0
+	v[3] = 0 // Seq num
+
+	sendICMPv4(&e.route, header.ICMPv4Echo, 0, v)
 }

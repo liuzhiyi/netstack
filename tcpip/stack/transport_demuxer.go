@@ -15,8 +15,9 @@ import (
 // transportEndpoints manages all endpoints of a given protocol. It has its own
 // mutex so as to reduce interference between protocols.
 type transportEndpoints struct {
-	mu        sync.RWMutex
-	endpoints map[TransportEndpointID]TransportEndpoint
+	mu                 sync.RWMutex
+	endpoints          map[TransportEndpointID]TransportEndpoint
+	broadcastEndpoints map[TransportEndpoint]struct{}
 }
 
 // transportDemuxer demultiplexes packets targeted at a transport endpoint
@@ -32,10 +33,39 @@ func newTransportDemuxer(stack *Stack) *transportDemuxer {
 
 	// Add each transport to the demuxer.
 	for proto := range stack.transportProtocols {
-		d.protocol[proto] = &transportEndpoints{endpoints: make(map[TransportEndpointID]TransportEndpoint)}
+		d.protocol[proto] = &transportEndpoints{
+			endpoints:          make(map[TransportEndpointID]TransportEndpoint),
+			broadcastEndpoints: make(map[TransportEndpoint]struct{}),
+		}
 	}
 
 	return d
+}
+
+func (d *transportDemuxer) registerBroadcastEndpoint(protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) error {
+	eps, ok := d.protocol[protocol]
+	if !ok {
+		return tcpip.ErrUnknownProtocol
+	}
+
+	eps.mu.Lock()
+	defer eps.mu.Unlock()
+
+	eps.broadcastEndpoints[ep] = struct{}{}
+
+	return nil
+}
+
+func (d *transportDemuxer) unregisterBroadcastEndpoint(protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) {
+	eps, ok := d.protocol[protocol]
+	if !ok {
+		return
+	}
+
+	eps.mu.Lock()
+	defer eps.mu.Unlock()
+
+	delete(eps.broadcastEndpoints, ep)
 }
 
 // registerEndpoint registers the given endpoint with the dispatcher such that
@@ -82,6 +112,13 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 
 	eps.mu.RLock()
 	defer eps.mu.RUnlock()
+
+	if len(eps.broadcastEndpoints) > 0 {
+		for ep := range eps.broadcastEndpoints {
+			ep.HandlePacket(r, id, v)
+		}
+		return true
+	}
 
 	// Try to find a match with the id as provided.
 	if ep := eps.endpoints[id]; ep != nil {

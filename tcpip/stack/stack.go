@@ -302,6 +302,42 @@ func (s *Stack) SetPromiscuousMode(nicID tcpip.NICID, enable bool) error {
 	return nil
 }
 
+// RegisterBroadcastEndpoint registers an endpoint with the dispatcher
+// that will, along with all other broadcast endpoints, recieve all
+// packets matching the transport protocol.
+//
+// This is used for ICMP v4 and v6.
+func (s *Stack) RegisterTransportBroadcastEndpoint(nicID tcpip.NICID, protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) error {
+	if nicID == 0 {
+		return s.demux.registerBroadcastEndpoint(protocol, ep)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nic := s.nics[nicID]
+	if nic == nil {
+		return tcpip.ErrUnknownNICID
+	}
+
+	return nic.demux.registerBroadcastEndpoint(protocol, ep)
+}
+
+func (s *Stack) UnregisterTransportBroadcastEndpoint(nicID tcpip.NICID, protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) {
+	if nicID == 0 {
+		s.demux.unregisterBroadcastEndpoint(protocol, ep)
+		return
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nic := s.nics[nicID]
+	if nic != nil {
+		nic.demux.unregisterBroadcastEndpoint(protocol, ep)
+	}
+}
+
 // RegisterTransportEndpoint registers the given endpoint with the stack
 // transport dispatcher. Received packets that match the provided id will be
 // delivered to the given endpoint; specifying a nic is optinal, but
