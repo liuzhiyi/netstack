@@ -138,8 +138,13 @@ func (*protocol) ParseAddresses(v buffer.View) (src, dst tcpip.Address) {
 }
 
 // NewEndpoint creates a new ipv6 endpoint.
-func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint, _ *stack.Stack) (stack.NetworkEndpoint, error) {
-	return newEndpoint(nicid, addr, dispatcher, linkEP), nil
+func (p *protocol) NewEndpoint(cfg stack.NetworkEndpointConfig) (stack.NetworkEndpoint, error) {
+	return newEndpoint(cfg.NICID, cfg.Addr, cfg.Dispatcher, cfg.Sender), nil
+}
+
+func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
+	// TODO: icmpv6 ndp
+	return nil
 }
 
 func init() {

@@ -15,6 +15,7 @@ package stack
 
 import (
 	"sync"
+	"time"
 
 	"github.com/google/netstack/tcpip"
 	"github.com/google/netstack/tcpip/buffer"
@@ -27,11 +28,16 @@ type transportProtocolState struct {
 	defaultHandler func(*Route, TransportEndpointID, buffer.View) bool
 }
 
+type networkProtocolState struct {
+	proto          NetworkProtocol
+	defaultHandler func(*Route, buffer.View) bool
+}
+
 // Stack is a networking stack, with all supported protocols, NICs, and route
 // table.
 type Stack struct {
 	transportProtocols map[tcpip.TransportProtocolNumber]*transportProtocolState
-	networkProtocols   map[tcpip.NetworkProtocolNumber]NetworkProtocol
+	networkProtocols   map[tcpip.NetworkProtocolNumber]*networkProtocolState
 
 	demux *transportDemuxer
 
@@ -53,7 +59,7 @@ type Stack struct {
 func New(network []string, transport []string) tcpip.Stack {
 	s := &Stack{
 		transportProtocols: make(map[tcpip.TransportProtocolNumber]*transportProtocolState),
-		networkProtocols:   make(map[tcpip.NetworkProtocolNumber]NetworkProtocol),
+		networkProtocols:   make(map[tcpip.NetworkProtocolNumber]*networkProtocolState),
 		nics:               make(map[tcpip.NICID]*NIC),
 		PortManager:        ports.NewPortManager(),
 	}
@@ -65,7 +71,9 @@ func New(network []string, transport []string) tcpip.Stack {
 			continue
 		}
 
-		s.networkProtocols[netProto.Number()] = netProto
+		s.networkProtocols[netProto.Number()] = &networkProtocolState{
+			proto: netProto,
+		}
 	}
 
 	// Add specified transport protocols.
@@ -87,7 +95,7 @@ func New(network []string, transport []string) tcpip.Stack {
 }
 
 // SetTransportProtocolHandler sets the per-stack default handler for the given
-// protocol.
+// transport protocol.
 //
 // It must be called only during initialization of the stack. Changing it as the
 // stack is operating is not supported.
@@ -95,6 +103,22 @@ func (s *Stack) SetTransportProtocolHandler(p tcpip.TransportProtocolNumber, h f
 	state := s.transportProtocols[p]
 	if state != nil {
 		state.defaultHandler = h
+	}
+}
+
+// SetNetworkProtocolHandler sets the per-stack default handler for the given
+// network protocol.
+//
+// It must be called only during initialization of the stack. Changing it as the
+// stack is operating is not supported.
+//
+// A network protocol default handler is only intended to be used with network
+// protocols that do not have a higher-level transport protocol. For example,
+// ARP is a layer 2 network protocol that has no transport protocol.
+func (s *Stack) SetNetworkProtocolHandler(p tcpip.NetworkProtocolNumber, fn func(*Route, buffer.View) bool) {
+	state := s.networkProtocols[p]
+	if state != nil {
+		state.defaultHandler = fn
 	}
 }
 
@@ -139,6 +163,9 @@ func (s *Stack) createNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, enabled b
 	}
 
 	n := newNIC(s, id, ep)
+	for num, netProto := range s.networkProtocols {
+		n.linkAddrLookup[num] = netProto.proto.NewLinkAddressLookup(s, id, n.linkEP.LinkAddress())
+	}
 
 	s.nics[id] = n
 	if enabled {
@@ -216,6 +243,21 @@ func (s *Stack) RemoveAddress(id tcpip.NICID, addr tcpip.Address) error {
 	return nic.RemoveAddress(addr)
 }
 
+// TODO remove?
+func (s *Stack) AddLinkAddrCache(id tcpip.NICID, addr tcpip.Address, linkAddr tcpip.LinkAddress) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nic := s.nics[id]
+
+	nic.mu.Lock()
+	defer nic.mu.Unlock()
+	nic.linkAddrCache[addr] = linkAddrEntry{
+		linkAddr: linkAddr,
+		creation: time.Now(),
+	}
+}
+
 // FindRoute creates a route to the given destination address, leaving through
 // the given nic and local address (if provided).
 func (s *Stack) FindRoute(id tcpip.NICID, localAddr, remoteAddr tcpip.Address, netProto tcpip.NetworkProtocolNumber) (Route, error) {
@@ -243,10 +285,21 @@ func (s *Stack) FindRoute(id tcpip.NICID, localAddr, remoteAddr tcpip.Address, n
 			continue
 		}
 
-		return makeRoute(netProto, ref.ep.ID().LocalAddress, remoteAddr, ref), nil
-	}
+		r := Route{
+			NetProto:      netProto,
+			LocalAddress:  ref.ep.ID().LocalAddress,
+			RemoteAddress: remoteAddr,
+			ref:           ref,
+		}
+		nic.mu.RLock()
+		r.RemoteLinkAddress = nic.linkAddrCache[remoteAddr].linkAddr
+		nic.mu.RUnlock()
+		if r.RemoteLinkAddress == "" {
+			r.FindLinkAddr(true) // TODO: do not blockhere!
+		}
 
-	// TODO: send ARP request
+		return r, nil
+	}
 
 	return Route{}, tcpip.ErrNoRoute
 }

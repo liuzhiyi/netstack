@@ -319,3 +319,10 @@ func (a Address) String() string {
 		return fmt.Sprintf("%x", []byte(a))
 	}
 }
+
+// LinkAddress is a data link layer address.
+// It is immutable bytes, not a human-readable string.
+// It is typically a 6-byte MAC address.
+type LinkAddress string
+
+type LinkAddressLookupFunc func(addr Address) (LinkAddress, error)

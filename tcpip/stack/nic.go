@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/netstack/ilist"
 	"github.com/google/netstack/tcpip"
@@ -23,23 +24,46 @@ type NIC struct {
 
 	demux *transportDemuxer
 
-	mu          sync.RWMutex
-	promiscuous bool
-	primary     map[tcpip.NetworkProtocolNumber]*ilist.List
-	endpoints   map[NetworkEndpointID]*referencedNetworkEndpoint
-	multicast   map[NetworkEndpointID][]NetworkEndpointID
+	mu             sync.RWMutex
+	promiscuous    bool
+	primary        map[tcpip.NetworkProtocolNumber]*ilist.List
+	endpoints      map[NetworkEndpointID]*referencedNetworkEndpoint
+	multicast      map[NetworkEndpointID][]NetworkEndpointID
+	linkAddrCache  map[tcpip.Address]linkAddrEntry
+	linkAddrLookup map[tcpip.NetworkProtocolNumber]tcpip.LinkAddressLookupFunc
+}
+
+type linkAddrEntry struct {
+	linkAddr tcpip.LinkAddress
+	creation time.Time
 }
 
 func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint) *NIC {
-	return &NIC{
-		stack:     stack,
-		id:        id,
-		linkEP:    ep,
-		demux:     newTransportDemuxer(stack),
-		primary:   make(map[tcpip.NetworkProtocolNumber]*ilist.List),
-		endpoints: make(map[NetworkEndpointID]*referencedNetworkEndpoint),
-		multicast: make(map[NetworkEndpointID][]NetworkEndpointID),
+	nic := &NIC{
+		stack:          stack,
+		id:             id,
+		linkEP:         ep,
+		demux:          newTransportDemuxer(stack),
+		primary:        make(map[tcpip.NetworkProtocolNumber]*ilist.List),
+		endpoints:      make(map[NetworkEndpointID]*referencedNetworkEndpoint),
+		multicast:      make(map[NetworkEndpointID][]NetworkEndpointID),
+		linkAddrCache:  make(map[tcpip.Address]linkAddrEntry),
+		linkAddrLookup: make(map[tcpip.NetworkProtocolNumber]tcpip.LinkAddressLookupFunc),
 	}
+	go func() {
+		c := time.Tick(1 * time.Minute)
+		for now := range c {
+			// TODO: cancellation
+			nic.mu.Lock()
+			for addr, entry := range nic.linkAddrCache {
+				if now.Sub(entry.creation) > 60*time.Second {
+					delete(nic.linkAddrCache, addr)
+				}
+			}
+			nic.mu.Unlock()
+		}
+	}()
+	return nic
 }
 
 // attachLinkEndpoint attaches the NIC to the endpoint, which will enable it
@@ -96,7 +120,15 @@ func (n *NIC) addAddressLocked(protocol tcpip.NetworkProtocolNumber, addr tcpip.
 	}
 
 	// Create the new network endpoint.
-	ep, err := netProto.NewEndpoint(n.id, addr, n, n.linkEP, n.stack)
+	cfg := NetworkEndpointConfig{
+		NICID:          n.id,
+		Addr:           addr,
+		Dispatcher:     n,
+		Sender:         n.linkEP,
+		Stack:          n.stack,
+		DefaultHandler: netProto.defaultHandler,
+	}
+	ep, err := netProto.proto.NewEndpoint(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -198,20 +230,20 @@ func (n *NIC) deliverMulticastPacket(v buffer.View) {
 // DeliverNetworkPacket finds the appropriate network protocol endpoint and
 // hands the packet over for further processing. This function is called when
 // the NIC receives a packet from the physical interface.
-func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr [6]byte, protocol tcpip.NetworkProtocolNumber, v buffer.View) {
+func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, v buffer.View) {
 	netProto, ok := n.stack.networkProtocols[protocol]
 	if !ok {
 		atomic.AddUint64(&n.stack.stats.UnknownProtocolRcvdPackets, 1)
 		return
 	}
 
-	if len(v) < netProto.MinimumPacketSize() {
-		fmt.Printf("nic.go: len(v)=%d < netProto.MinimumPacketSize()=%d\n", len(v), netProto.MinimumPacketSize())
+	if len(v) < netProto.proto.MinimumPacketSize() {
+		fmt.Printf("nic.go: len(v)=%d < netProto.MinimumPacketSize()=%d\n", len(v), netProto.proto.MinimumPacketSize())
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
 
-	src, dst := netProto.ParseAddresses(v)
+	src, dst := netProto.proto.ParseAddresses(v)
 	fmt.Printf("DeliverNetworkPacket: dst=%v\n", dst)
 	id := NetworkEndpointID{dst}
 

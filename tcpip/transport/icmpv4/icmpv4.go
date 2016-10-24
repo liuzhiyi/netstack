@@ -170,6 +170,8 @@ func (e *endpoint) Connect(addr tcpip.FullAddress) error {
 	}
 	defer r.Release()
 
+	// TODO introduce stateConnecting, do this off the goroutine:
+
 	e.id.LocalAddress = r.LocalAddress
 	e.id.RemoteAddress = addr.Addr
 

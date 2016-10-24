@@ -5,6 +5,8 @@
 package stack
 
 import (
+	"time"
+
 	"github.com/google/netstack/tcpip"
 	"github.com/google/netstack/tcpip/buffer"
 	"github.com/google/netstack/tcpip/header"
@@ -17,14 +19,14 @@ type Route struct {
 
 	// RemoteLinkAddress is the link-layer (MAC) address of the
 	// final destination of the route.
-	RemoteLinkAddress [6]byte
+	RemoteLinkAddress tcpip.LinkAddress
 
 	// LocalAddress is the local address where the route starts.
 	LocalAddress tcpip.Address
 
 	// LocalLinkAddress is the link-layer (MAC) address of the
 	// where the route starts.
-	LocalLinkAddress [6]byte
+	LocalLinkAddress tcpip.LinkAddress
 
 	// NextHop is the next node in the path to the destination.
 	NextHop tcpip.Address
@@ -35,17 +37,6 @@ type Route struct {
 	// ref a reference to the network endpoint through which the route
 	// starts.
 	ref *referencedNetworkEndpoint
-}
-
-// makeRoute initializes a new route. It takes ownership of the provided
-// reference to a network endpoint.
-func makeRoute(netProto tcpip.NetworkProtocolNumber, localAddr, remoteAddr tcpip.Address, ref *referencedNetworkEndpoint) Route {
-	return Route{
-		NetProto:      netProto,
-		LocalAddress:  localAddr,
-		RemoteAddress: remoteAddr,
-		ref:           ref,
-	}
 }
 
 // NICID returns the id of the NIC from which this route originates.
@@ -87,4 +78,41 @@ func (r *Route) Release() {
 func (r *Route) Clone() Route {
 	r.ref.incRef()
 	return *r
+}
+
+// FindLinkAddr looks up the remote link address in the link address cache.
+// If it cannot find the link address in the cache, it sends
+func (r *Route) FindLinkAddr(blocking bool) error {
+	nic := r.ref.nic
+
+	nic.mu.RLock()
+	// TODO: this is already in FindRoute, skip it here?
+	if entry, found := nic.linkAddrCache[r.RemoteAddress]; found {
+		r.RemoteLinkAddress = entry.linkAddr
+		nic.mu.RUnlock()
+		return nil
+	}
+	if !blocking {
+		nic.mu.RUnlock()
+		return tcpip.ErrWouldBlock
+	}
+	fn := nic.linkAddrLookup[r.ref.protocol]
+	nic.mu.RUnlock()
+
+	if fn == nil {
+		return tcpip.ErrNoRoute
+	}
+	linkAddr, err := fn(r.RemoteAddress)
+	if err != nil {
+		return err
+	}
+	r.RemoteLinkAddress = linkAddr
+
+	nic.mu.Lock()
+	nic.linkAddrCache[r.RemoteAddress] = linkAddrEntry{
+		linkAddr: linkAddr,
+		creation: time.Now(),
+	}
+	nic.mu.Unlock()
+	return nil
 }

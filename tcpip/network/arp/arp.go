@@ -6,6 +6,8 @@ package arp
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/google/netstack/tcpip"
 	"github.com/google/netstack/tcpip/buffer"
@@ -19,10 +21,10 @@ const (
 )
 
 type endpoint struct {
-	nicid      tcpip.NICID
-	linkEP     stack.LinkEndpoint
-	dispatcher stack.TransportDispatcher
-	stack      *stack.Stack
+	nicid   tcpip.NICID
+	linkEP  stack.LinkEndpoint
+	handler func(*stack.Route, buffer.View) bool
+	stack   *stack.Stack
 }
 
 // MTU implements stack.NetworkEndpoint.MTU. It returns the link-layer MTU minus
@@ -62,7 +64,10 @@ func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
 	}
 
 	// TODO: add HardwareAddressSender/ProtocolAddressSender to ARP cache
-	fmt.Printf("TODO add %x/%s to ARP cache\n", h.HardwareAddressSender(), tcpip.Address(h.ProtocolAddressSender()))
+	/*fmt.Printf("TODO add %x/%s to ARP cache\n", h.HardwareAddressSender(), tcpip.Address(h.ProtocolAddressSender()))
+	var linkAddr [6]byte
+	copy(linkAddr[:], h.HardwareAddressSender())
+	e.stack.AddLinkAddrCache(nic, tcpip.Address(h.ProtocolAddressSender()), linkAddr)*/
 
 	if h.Op() == header.ARPRequest {
 		//dst := tcpip.Address(h.ProtocolAddressSender())
@@ -73,7 +78,9 @@ func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
 		e.linkEP.WritePacket(r, &hdr, v, ProtocolNumber)
 	}
 
-	//e.dispatcher.DeliverTransportPacket(r, tcpip.TransportProtocolNumber(h.Protocol()), v)
+	if e.handler != nil {
+		e.handler(r, v)
+	}
 }
 
 type protocol struct{}
@@ -86,15 +93,71 @@ func (*protocol) ParseAddresses(v buffer.View) (src, dst tcpip.Address) {
 	return "", ""
 }
 
-func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint, s *stack.Stack) (stack.NetworkEndpoint, error) {
+func (p *protocol) NewEndpoint(cfg stack.NetworkEndpointConfig) (stack.NetworkEndpoint, error) {
 	return &endpoint{
-		nicid:      nicid,
-		linkEP:     linkEP,
-		dispatcher: dispatcher,
-		stack:      s,
+		nicid:   cfg.NICID,
+		linkEP:  cfg.Sender,
+		handler: cfg.DefaultHandler,
+		stack:   cfg.Stack,
 	}, nil
+}
+
+func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
+	return nil
 }
 
 func init() {
 	stack.RegisterNetworkProtocol(ProtocolName, &protocol{})
+}
+
+func NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
+	var waitMu sync.Mutex
+	wait := make(map[chan tcpip.LinkAddress]tcpip.Address)
+
+	s.SetNetworkProtocolHandler(ProtocolNumber, func(r *stack.Route, v buffer.View) bool {
+		h := header.ARP(v)
+		localAddr := tcpip.Address(h.ProtocolAddressTarget())
+		nic := s.CheckLocalAddress(0, localAddr)
+		fmt.Printf("arp: adding %x/%s to cache\n", h.HardwareAddressSender(), tcpip.Address(h.ProtocolAddressSender()))
+
+		addr := tcpip.Address(h.ProtocolAddressSender())
+		linkAddr := tcpip.LinkAddress(h.HardwareAddressSender())
+		s.AddLinkAddrCache(nic, addr, linkAddr)
+
+		if h.Op() != header.ARPReply {
+			return false
+		}
+
+		waitMu.Lock()
+		for ch, chAddr := range wait {
+			if addr == chAddr {
+				select {
+				case ch <- linkAddr:
+				default:
+				}
+				delete(wait, ch)
+			}
+		}
+		waitMu.Unlock()
+
+		return false
+	})
+
+	return func(addr tcpip.Address) (tcpip.LinkAddress, error) {
+		ch := make(chan tcpip.LinkAddress)
+
+		fmt.Printf("TODO send ARP request for addr: %v\n", addr)
+
+		select {
+		case res := <-ch:
+			return res, nil
+		case <-time.After(15 * time.Second): // TODO configurable ARP Wait
+			waitMu.Lock()
+			delete(wait, ch)
+			waitMu.Unlock()
+			return "", tcpip.ErrTimeout
+		}
+
+		return "", fmt.Errorf("LinkAddressLookupFunc NOT IMPLEMENTED")
+	}
 }

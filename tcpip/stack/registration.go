@@ -125,7 +125,18 @@ type NetworkProtocol interface {
 	ParseAddresses(v buffer.View) (src, dst tcpip.Address)
 
 	// NewEndpoint creates a new endpoint of this protocol.
-	NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher TransportDispatcher, sender LinkEndpoint, s *Stack) (NetworkEndpoint, error)
+	NewEndpoint(cfg NetworkEndpointConfig) (NetworkEndpoint, error)
+
+	NewLinkAddressLookup(s *Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc
+}
+
+type NetworkEndpointConfig struct {
+	NICID          tcpip.NICID
+	Addr           tcpip.Address
+	Dispatcher     TransportDispatcher
+	Sender         LinkEndpoint
+	Stack          *Stack
+	DefaultHandler func(*Route, buffer.View) bool
 }
 
 // NetworkDispatcher contains the methods used by the network stack to deliver
@@ -134,7 +145,7 @@ type NetworkProtocol interface {
 type NetworkDispatcher interface {
 	// DeliverNetworkPacket finds the appropriate network protocol
 	// endpoint and hands the packet over for further processing.
-	DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr [6]byte, protocol tcpip.NetworkProtocolNumber, v buffer.View)
+	DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, v buffer.View)
 }
 
 // LinkEndpoint is the interface implemented by data link layer protocols (e.g.,
@@ -160,6 +171,8 @@ type LinkEndpoint interface {
 	// Attach attaches the data link layer endpoint to the network-layer
 	// dispatcher of the stack.
 	Attach(dispatcher NetworkDispatcher)
+
+	LinkAddress() tcpip.LinkAddress
 }
 
 var (

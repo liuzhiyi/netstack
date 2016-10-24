@@ -17,6 +17,7 @@ import (
 	"github.com/google/netstack/tcpip"
 	"github.com/google/netstack/tcpip/buffer"
 	"github.com/google/netstack/tcpip/header"
+	"github.com/google/netstack/tcpip/network/arp"
 	"github.com/google/netstack/tcpip/stack"
 )
 
@@ -45,17 +46,25 @@ type endpoint struct {
 	dispatcher stack.TransportDispatcher
 }
 
-func newEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint) *endpoint {
+func newEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint, s *stack.Stack) *endpoint {
 	e := &endpoint{
 		nicid:      nicid,
 		linkEP:     linkEP,
 		dispatcher: dispatcher,
 	}
 	copy(e.address[:], addr)
+
 	e.id = stack.NetworkEndpointID{tcpip.Address(e.address[:])}
+
+	//s.SetNetworkProtocolHandler(arp.ProtocolNumber, e.handleARP)
 
 	return e
 }
+
+/*ifunc (e *endpoint) handleARP(r *stack.Route, v buffer.View) bool {
+	fmt.Printf("handleARP\n")
+	return false
+}*/
 
 // MTU implements stack.NetworkEndpoint.MTU. It returns the link-layer MTU minus
 // the network layer max header length.
@@ -154,8 +163,16 @@ func (*protocol) ParseAddresses(v buffer.View) (src, dst tcpip.Address) {
 }
 
 // NewEndpoint creates a new ipv4 endpoint.
-func (p *protocol) NewEndpoint(nicid tcpip.NICID, addr tcpip.Address, dispatcher stack.TransportDispatcher, linkEP stack.LinkEndpoint, _ *stack.Stack) (stack.NetworkEndpoint, error) {
-	return newEndpoint(nicid, addr, dispatcher, linkEP), nil
+func (p *protocol) NewEndpoint(cfg stack.NetworkEndpointConfig) (stack.NetworkEndpoint, error) {
+	return newEndpoint(cfg.NICID, cfg.Addr, cfg.Dispatcher, cfg.Sender, cfg.Stack), nil
+}
+
+// TODO:
+//	make tcpip.NetworkProtocol a struct
+//	have package arp (and package icmpv6) fill out this field of the struct
+//	get rid of tcpip.NetworkProtocolNumber
+func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
+	return arp.NewLinkAddressLookup(s, nicID, localLinkAddr)
 }
 
 // hash3Words calculates the Jenkins hash of 3 32-bit words. This is adapted
