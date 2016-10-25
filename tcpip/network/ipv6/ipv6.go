@@ -142,7 +142,7 @@ func (p *protocol) NewEndpoint(cfg stack.NetworkEndpointConfig) (stack.NetworkEn
 	return newEndpoint(cfg.NICID, cfg.Addr, cfg.Dispatcher, cfg.Sender), nil
 }
 
-func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
+func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, linkEP stack.LinkEndpoint) tcpip.LinkAddressLookupFunc {
 	// TODO: icmpv6 ndp
 	return nil
 }

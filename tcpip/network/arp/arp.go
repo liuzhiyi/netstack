@@ -63,14 +63,7 @@ func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
 		return // ignore
 	}
 
-	// TODO: add HardwareAddressSender/ProtocolAddressSender to ARP cache
-	/*fmt.Printf("TODO add %x/%s to ARP cache\n", h.HardwareAddressSender(), tcpip.Address(h.ProtocolAddressSender()))
-	var linkAddr [6]byte
-	copy(linkAddr[:], h.HardwareAddressSender())
-	e.stack.AddLinkAddrCache(nic, tcpip.Address(h.ProtocolAddressSender()), linkAddr)*/
-
 	if h.Op() == header.ARPRequest {
-		//dst := tcpip.Address(h.ProtocolAddressSender())
 		h.SetOp(header.ARPReply)
 		copy(h.HardwareAddressSender(), r.LocalLinkAddress[:])
 		copy(h.ProtocolAddressSender(), h.ProtocolAddressTarget())
@@ -102,7 +95,7 @@ func (p *protocol) NewEndpoint(cfg stack.NetworkEndpointConfig) (stack.NetworkEn
 	}, nil
 }
 
-func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
+func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, linkEP stack.LinkEndpoint) tcpip.LinkAddressLookupFunc {
 	return nil
 }
 
@@ -110,54 +103,85 @@ func init() {
 	stack.RegisterNetworkProtocol(ProtocolName, &protocol{})
 }
 
-func NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
-	var waitMu sync.Mutex
-	wait := make(map[chan tcpip.LinkAddress]tcpip.Address)
+type lookup struct {
+	stack  *stack.Stack
+	linkEP stack.LinkEndpoint
 
-	s.SetNetworkProtocolHandler(ProtocolNumber, func(r *stack.Route, v buffer.View) bool {
-		h := header.ARP(v)
-		localAddr := tcpip.Address(h.ProtocolAddressTarget())
-		nic := s.CheckLocalAddress(0, localAddr)
-		fmt.Printf("arp: adding %x/%s to cache\n", h.HardwareAddressSender(), tcpip.Address(h.ProtocolAddressSender()))
+	mu      sync.Mutex
+	waiters map[chan tcpip.LinkAddress]tcpip.Address
+}
 
-		addr := tcpip.Address(h.ProtocolAddressSender())
-		linkAddr := tcpip.LinkAddress(h.HardwareAddressSender())
-		s.AddLinkAddrCache(nic, addr, linkAddr)
+// handler is designed to be used as a closure to SetNetworkProtocolHandler.
+func (l *lookup) handler(r *stack.Route, v buffer.View) bool {
+	h := header.ARP(v)
+	localAddr := tcpip.Address(h.ProtocolAddressTarget())
+	nic := l.stack.CheckLocalAddress(0, localAddr)
+	fmt.Printf("arp: adding %x/%s to cache\n", h.HardwareAddressSender(), tcpip.Address(h.ProtocolAddressSender()))
 
-		if h.Op() != header.ARPReply {
-			return false
-		}
+	addr := tcpip.Address(h.ProtocolAddressSender())
+	linkAddr := tcpip.LinkAddress(h.HardwareAddressSender())
+	l.stack.AddLinkAddrCache(nic, addr, linkAddr)
 
-		waitMu.Lock()
-		for ch, chAddr := range wait {
-			if addr == chAddr {
-				select {
-				case ch <- linkAddr:
-				default:
-				}
-				delete(wait, ch)
-			}
-		}
-		waitMu.Unlock()
-
+	if h.Op() != header.ARPReply {
 		return false
-	})
-
-	return func(addr tcpip.Address) (tcpip.LinkAddress, error) {
-		ch := make(chan tcpip.LinkAddress)
-
-		fmt.Printf("TODO send ARP request for addr: %v\n", addr)
-
-		select {
-		case res := <-ch:
-			return res, nil
-		case <-time.After(15 * time.Second): // TODO configurable ARP Wait
-			waitMu.Lock()
-			delete(wait, ch)
-			waitMu.Unlock()
-			return "", tcpip.ErrTimeout
-		}
-
-		return "", fmt.Errorf("LinkAddressLookupFunc NOT IMPLEMENTED")
 	}
+
+	l.mu.Lock()
+	for ch, chAddr := range l.waiters {
+		if addr == chAddr {
+			select {
+			case ch <- linkAddr:
+			default:
+			}
+			delete(l.waiters, ch)
+		}
+	}
+	l.mu.Unlock()
+
+	return false
+}
+
+var broadcastMAC = tcpip.LinkAddress([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+
+func (l *lookup) lookup(remote, local tcpip.Address) (tcpip.LinkAddress, error) {
+	ch := make(chan tcpip.LinkAddress)
+
+	r := &stack.Route{
+		RemoteLinkAddress: broadcastMAC,
+	}
+
+	hdr := buffer.NewPrependable(int(l.linkEP.MaxHeaderLength()) + header.ARPSize)
+	h := header.ARP(hdr.Prepend(header.ARPSize))
+	h.SetIPv4OverEthernet()
+	h.SetOp(header.ARPRequest)
+	copy(h.HardwareAddressSender(), l.linkEP.LinkAddress())
+	copy(h.ProtocolAddressSender(), local)
+	copy(h.ProtocolAddressTarget(), remote)
+
+	err := l.linkEP.WritePacket(r, &hdr, nil, ProtocolNumber)
+	if err != nil {
+		return "", err
+	}
+
+	select {
+	case res := <-ch:
+		return res, nil
+	case <-time.After(5 * time.Second): // TODO configurable ARP Wait
+		l.mu.Lock()
+		delete(l.waiters, ch)
+		l.mu.Unlock()
+		return "", tcpip.ErrTimeout
+	}
+}
+
+func NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, linkEP stack.LinkEndpoint) tcpip.LinkAddressLookupFunc {
+	//localLinkAddr := linkEP.LinkAddress()
+	l := &lookup{
+		stack:   s,
+		linkEP:  linkEP,
+		waiters: make(map[chan tcpip.LinkAddress]tcpip.Address),
+	}
+
+	s.SetNetworkProtocolHandler(ProtocolNumber, l.handler)
+	return l.lookup
 }

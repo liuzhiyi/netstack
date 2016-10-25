@@ -9,7 +9,7 @@ import "github.com/google/netstack/tcpip"
 const (
 	ARPProtocolNumber tcpip.NetworkProtocolNumber = 0x0806
 
-	ARPSize = 2 + 2 + 1 + 1 + 2 + 4*6
+	ARPSize = 2 + 2 + 1 + 1 + 2 + 2*6 + 2*4
 )
 
 type ARPOp uint16
@@ -29,6 +29,12 @@ func (a ARP) Op() ARPOp                    { return ARPOp(a[6])<<8 | ARPOp(a[7])
 func (a ARP) SetOp(op ARPOp) {
 	a[6] = uint8(op >> 8)
 	a[7] = uint8(op)
+}
+func (a ARP) SetIPv4OverEthernet() {
+	a[0], a[1] = 0, 1       // htypeEthernet
+	a[2], a[3] = 0x08, 0x00 // IPv4ProtocolNumber
+	a[4] = 6                // macSize
+	a[5] = uint8(IPv4AddressSize)
 }
 
 func (a ARP) HardwareAddressSender() []byte {

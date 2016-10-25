@@ -164,7 +164,7 @@ func (s *Stack) createNIC(id tcpip.NICID, linkEP tcpip.LinkEndpointID, enabled b
 
 	n := newNIC(s, id, ep)
 	for num, netProto := range s.networkProtocols {
-		n.linkAddrLookup[num] = netProto.proto.NewLinkAddressLookup(s, id, n.linkEP.LinkAddress())
+		n.linkAddrLookup[num] = netProto.proto.NewLinkAddressLookup(s, id, n.linkEP)
 	}
 
 	s.nics[id] = n

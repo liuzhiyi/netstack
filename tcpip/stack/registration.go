@@ -127,7 +127,7 @@ type NetworkProtocol interface {
 	// NewEndpoint creates a new endpoint of this protocol.
 	NewEndpoint(cfg NetworkEndpointConfig) (NetworkEndpoint, error)
 
-	NewLinkAddressLookup(s *Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc
+	NewLinkAddressLookup(s *Stack, nicID tcpip.NICID, linkEP LinkEndpoint) tcpip.LinkAddressLookupFunc
 }
 
 type NetworkEndpointConfig struct {

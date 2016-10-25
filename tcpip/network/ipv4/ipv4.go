@@ -171,8 +171,8 @@ func (p *protocol) NewEndpoint(cfg stack.NetworkEndpointConfig) (stack.NetworkEn
 //	make tcpip.NetworkProtocol a struct
 //	have package arp (and package icmpv6) fill out this field of the struct
 //	get rid of tcpip.NetworkProtocolNumber
-func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, localLinkAddr tcpip.LinkAddress) tcpip.LinkAddressLookupFunc {
-	return arp.NewLinkAddressLookup(s, nicID, localLinkAddr)
+func (p *protocol) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, linkEP stack.LinkEndpoint) tcpip.LinkAddressLookupFunc {
+	return arp.NewLinkAddressLookup(s, nicID, linkEP)
 }
 
 // hash3Words calculates the Jenkins hash of 3 32-bit words. This is adapted

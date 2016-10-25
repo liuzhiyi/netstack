@@ -102,7 +102,7 @@ func (r *Route) FindLinkAddr(blocking bool) error {
 	if fn == nil {
 		return tcpip.ErrNoRoute
 	}
-	linkAddr, err := fn(r.RemoteAddress)
+	linkAddr, err := fn(r.RemoteAddress, r.LocalAddress)
 	if err != nil {
 		return err
 	}

@@ -325,4 +325,4 @@ func (a Address) String() string {
 // It is typically a 6-byte MAC address.
 type LinkAddress string
 
-type LinkAddressLookupFunc func(addr Address) (LinkAddress, error)
+type LinkAddressLookupFunc func(remote, local Address) (LinkAddress, error)
