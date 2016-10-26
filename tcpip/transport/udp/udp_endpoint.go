@@ -27,6 +27,7 @@ type endpointState int
 const (
 	stateInitial endpointState = iota
 	stateBound
+	stateConnecting
 	stateConnected
 	stateClosed
 )
@@ -372,13 +373,35 @@ func (e *endpoint) Connect(addr tcpip.FullAddress) error {
 	e.dstPort = addr.Port
 	e.regNICID = nicid
 
+	err = r.FindLinkAddr(false)
+	if err == tcpip.ErrWouldBlock {
+		e.state = stateConnecting
+		go e.findLinkAddr()
+	} else if err == nil {
+		e.state = stateConnected
+
+		e.rcvMu.Lock()
+		e.rcvReady = true
+		e.rcvMu.Unlock()
+
+		return nil
+	}
+
+	return err
+}
+
+func (e *endpoint) findLinkAddr() {
+	if err := e.route.FindLinkAddr(true); err != nil {
+		return
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.state = stateConnected
 
 	e.rcvMu.Lock()
 	e.rcvReady = true
 	e.rcvMu.Unlock()
-
-	return nil
 }
 
 // ConnectEndpoint is not supported.

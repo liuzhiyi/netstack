@@ -291,12 +291,6 @@ func (s *Stack) FindRoute(id tcpip.NICID, localAddr, remoteAddr tcpip.Address, n
 			RemoteAddress: remoteAddr,
 			ref:           ref,
 		}
-		nic.mu.RLock()
-		r.RemoteLinkAddress = nic.linkAddrCache[remoteAddr].linkAddr
-		nic.mu.RUnlock()
-		if r.RemoteLinkAddress == "" {
-			r.FindLinkAddr(true) // TODO: do not blockhere!
-		}
 
 		return r, nil
 	}

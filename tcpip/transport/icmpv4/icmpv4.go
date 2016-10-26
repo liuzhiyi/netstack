@@ -58,8 +58,10 @@ type endpointState int
 const (
 	stateInitial endpointState = iota
 	stateBound
+	stateConnecting
 	stateConnected
 	stateClosed
+	stateError
 )
 
 type endpoint struct {
@@ -79,6 +81,7 @@ type endpoint struct {
 	mu        sync.RWMutex
 	id        stack.TransportEndpointID
 	state     endpointState
+	hardError error
 	bindNICID tcpip.NICID
 	bindAddr  tcpip.Address
 	regNICID  tcpip.NICID
@@ -170,24 +173,50 @@ func (e *endpoint) Connect(addr tcpip.FullAddress) error {
 	}
 	defer r.Release()
 
-	// TODO introduce stateConnecting, do this off the goroutine:
+	err = r.FindLinkAddr(false)
+	e.route = r.Clone()
+	if err == tcpip.ErrWouldBlock {
+		e.state = stateConnecting
+		go e.findLinkAddr()
+	} else if err == nil {
+		e.state = stateConnected
+		if _, err = e.registerWithStack(nicid, e.id); err != nil {
+			return err
+		}
+		e.rcvMu.Lock()
+		e.rcvReady = true
+		e.rcvMu.Unlock()
+	} else {
+		return err
+	}
 
 	e.id.LocalAddress = r.LocalAddress
 	e.id.RemoteAddress = addr.Addr
 
-	if _, err = e.registerWithStack(nicid, e.id); err != nil {
-		return err
+	e.bindNICID = nicid
+
+	return nil
+}
+
+func (e *endpoint) findLinkAddr() {
+	if err := e.route.FindLinkAddr(true); err != nil {
+		e.mu.Lock()
+		e.state = stateError
+		e.hardError = err
+		e.mu.Unlock()
+		return
 	}
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.state = stateConnected
-	e.route = r.Clone()
-	e.bindNICID = nicid
+	if _, err := e.registerWithStack(e.bindNICID, e.id); err != nil {
+		return
+	}
 
 	e.rcvMu.Lock()
 	e.rcvReady = true
 	e.rcvMu.Unlock()
-
-	return nil
 }
 
 func (*endpoint) ConnectEndpoint(tcpip.Endpoint) error {

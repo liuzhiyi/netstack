@@ -340,10 +340,13 @@ func (e *endpoint) protocolMainLoop(passive bool) error {
 		e.completeWorker()
 	}()
 
-	// TODO
-	/*if err := e.route.FindLinkAddr(); err != nil {
+	if err := e.route.FindLinkAddr(true); err != nil {
+		e.mu.Lock()
+		e.state = stateError
+		e.hardError = err
+		e.mu.Unlock()
 		return err
-	}*/
+	}
 
 	if !passive {
 		// This is an active connection, so we must initiate the 3-way
