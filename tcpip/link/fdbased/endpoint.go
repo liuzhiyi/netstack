@@ -74,6 +74,10 @@ func (*endpoint) MaxHeaderLength() uint16 {
 	return 0
 }
 
+func (*endpoint) LinkAddress() tcpip.LinkAddress {
+	return ""
+}
+
 // WritePacket writes outbound packets to the file descriptor. If it is not
 // currently writable, the packet is dropped.
 func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.NetworkProtocolNumber) error {
@@ -140,7 +144,7 @@ func (e *endpoint) dispatch(d stack.NetworkDispatcher, largeV buffer.View) (bool
 		return true, nil
 	}
 
-	d.DeliverNetworkPacket(e, p, e.vv)
+	d.DeliverNetworkPacket(e, "", "", p, e.vv)
 
 	// Prepare e.views for another packet: release used views.
 	for i := 0; i < used; i++ {

@@ -44,6 +44,10 @@ func (*endpoint) MaxHeaderLength() uint16 {
 	return 0
 }
 
+func (*endpoint) LinkAddress() tcpip.LinkAddress {
+	return ""
+}
+
 // WritePacket implements stack.LinkEndpoint.WritePacket. It delivers outbound
 // packets to the network-layer dispatcher.
 func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload buffer.View, protocol tcpip.NetworkProtocolNumber) error {
@@ -53,13 +57,13 @@ func (e *endpoint) WritePacket(_ *stack.Route, hdr *buffer.Prependable, payload 
 		// header as the full packet.
 		v := hdr.View()
 		vv := v.ToVectorisedView(views)
-		e.dispatcher.DeliverNetworkPacket(e, protocol, &vv)
+		e.dispatcher.DeliverNetworkPacket(e, "", "", protocol, &vv)
 	} else {
 		v := buffer.NewView(len(payload) + hdr.UsedLength())
 		copy(v, hdr.UsedBytes())
 		copy(v[hdr.UsedLength():], payload)
 		vv := v.ToVectorisedView(views)
-		e.dispatcher.DeliverNetworkPacket(e, protocol, &vv)
+		e.dispatcher.DeliverNetworkPacket(e, "", "", protocol, &vv)
 	}
 
 	return nil

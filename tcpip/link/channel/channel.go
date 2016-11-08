@@ -77,6 +77,10 @@ func (*Endpoint) MaxHeaderLength() uint16 {
 	return 0
 }
 
+func (*Endpoint) LinkAddress() tcpip.LinkAddress {
+	return ""
+}
+
 func (*Endpoint) NewLinkAddressLookup(s *stack.Stack, nicID tcpip.NICID, linkEP stack.LinkEndpoint) tcpip.LinkAddressLookupFunc {
 	return nil
 }
