@@ -26,7 +26,8 @@ const (
 type icmpPacket struct {
 	icmpPacketEntry
 	route *stack.Route
-	view  buffer.View
+	data  buffer.VectorisedView
+	views [8]buffer.View // large enough for a VectorisedView
 }
 
 type protocol struct{}
@@ -46,7 +47,7 @@ func (*protocol) ParsePorts(v buffer.View) (src, dst uint16, err error) {
 	return h.SourcePort(), h.DestinationPort(), nil
 }
 
-func (*protocol) HandleUnknownDestinationPacket(r *stack.Route, id stack.TransportEndpointID, v buffer.View) {
+func (*protocol) HandleUnknownDestinationPacket(r *stack.Route, id stack.TransportEndpointID, vv *buffer.VectorisedView) {
 	fmt.Printf("icmpv6 HandleUnknownDestinationPacket\n")
 }
 
@@ -144,7 +145,7 @@ func (e *endpoint) RecvMsg(addr *tcpip.FullAddress) (buffer.View, tcpip.ControlM
 }
 
 func (e *endpoint) registerWithStack(nicid tcpip.NICID, id stack.TransportEndpointID) (stack.TransportEndpointID, error) {
-	err := e.stack.RegisterTransportEndpoint(nicid, ProtocolNumber, id, e)
+	err := e.stack.RegisterTransportEndpoint(nicid, []tcpip.NetworkProtocolNumber{e.netProto}, ProtocolNumber, id, e)
 	return id, err
 }
 
@@ -170,7 +171,7 @@ func (e *endpoint) bindLocked(addr tcpip.FullAddress, commit func() error) error
 	if commit != nil {
 		if err := commit(); err != nil {
 			// Unregister, the commit failed.
-			e.stack.UnregisterTransportEndpoint(addr.NIC, ProtocolNumber, id)
+			e.stack.UnregisterTransportEndpoint(addr.NIC, []tcpip.NetworkProtocolNumber{e.netProto}, ProtocolNumber, id)
 			return err
 		}
 	}
@@ -251,7 +252,7 @@ func sendICMPv6(r *stack.Route, typ header.ICMPv6Type, code byte, data buffer.Vi
 	return r.WritePacket(&hdr, data, ProtocolNumber)
 }
 
-func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, v buffer.View) {
+func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, vv *buffer.VectorisedView) {
 	e.rcvMu.Lock()
 	if !e.rcvReady || e.rcvClosed || e.rcvBufSize >= e.rcvBufSizeMax {
 		// Drop packet if our buffer is currently full.
@@ -259,11 +260,10 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, v 
 		return
 	}
 	wasEmpty := e.rcvBufSize == 0
-	e.rcvList.PushBack(&icmpPacket{
-		route: r,
-		view:  v,
-	})
-	e.rcvBufSize += len(v)
+	pkt := &icmpPacket{route: r}
+	pkt.data = vv.Clone(pkt.views[:])
+	e.rcvList.PushBack(pkt)
+	e.rcvBufSize += vv.Size()
 	e.rcvMu.Unlock()
 
 	if wasEmpty {
@@ -273,7 +273,7 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, v 
 
 func process(p *icmpPacket) {
 	r := p.route
-	v := p.view
+	v := p.data.First()
 	h := header.ICMPv6(v)
 	fmt.Printf("icmpv6.HandlePacket: len(v)=%d, type=%d, code=%d\n", len(v), h.Type(), h.Code())
 
@@ -302,8 +302,8 @@ func Process(s *stack.Stack) error {
 	if err != nil {
 		return err
 	}
-	s.SetTransportProtocolHandler(ProtocolNumber, func(r *stack.Route, id stack.TransportEndpointID, v buffer.View) bool {
-		ep.(stack.TransportEndpoint).HandlePacket(r, id, v)
+	s.SetTransportProtocolHandler(ProtocolNumber, func(r *stack.Route, id stack.TransportEndpointID, vv *buffer.VectorisedView) bool {
+		ep.(stack.TransportEndpoint).HandlePacket(r, id, vv)
 		return true
 	})
 
@@ -330,7 +330,7 @@ func Process(s *stack.Stack) error {
 		}
 		p := e.rcvList.Front()
 		e.rcvList.Remove(p)
-		e.rcvBufSize -= len(p.view)
+		e.rcvBufSize -= p.data.Size()
 		e.rcvMu.Unlock()
 
 		process(p)

@@ -5,7 +5,6 @@
 package stack
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/google/netstack/tcpip"
@@ -20,30 +19,37 @@ type transportEndpoints struct {
 	broadcastEndpoints map[TransportEndpoint]struct{}
 }
 
+type protocolIDs struct {
+	network   tcpip.NetworkProtocolNumber
+	transport tcpip.TransportProtocolNumber
+}
+
 // transportDemuxer demultiplexes packets targeted at a transport endpoint
 // (i.e., after they've been parsed by the network layer). It does two levels
 // of demultiplexing: first based on the transport protocol, then based on
 // endpoints IDs.
 type transportDemuxer struct {
-	protocol map[tcpip.TransportProtocolNumber]*transportEndpoints
+	protocol map[protocolIDs]*transportEndpoints
 }
 
 func newTransportDemuxer(stack *Stack) *transportDemuxer {
-	d := &transportDemuxer{protocol: make(map[tcpip.TransportProtocolNumber]*transportEndpoints)}
+	d := &transportDemuxer{protocol: make(map[protocolIDs]*transportEndpoints)}
 
 	// Add each transport to the demuxer.
-	for proto := range stack.transportProtocols {
-		d.protocol[proto] = &transportEndpoints{
-			endpoints:          make(map[TransportEndpointID]TransportEndpoint),
-			broadcastEndpoints: make(map[TransportEndpoint]struct{}),
+	for netProto := range stack.networkProtocols {
+		for proto := range stack.transportProtocols {
+			d.protocol[protocolIDs{netProto, proto}] = &transportEndpoints{
+				endpoints:          make(map[TransportEndpointID]TransportEndpoint),
+				broadcastEndpoints: make(map[TransportEndpoint]struct{}),
+			}
 		}
 	}
 
 	return d
 }
 
-func (d *transportDemuxer) registerBroadcastEndpoint(protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) error {
-	eps, ok := d.protocol[protocol]
+func (d *transportDemuxer) registerBroadcastEndpoint(netProto tcpip.NetworkProtocolNumber, protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) error {
+	eps, ok := d.protocol[protocolIDs{netProto, protocol}]
 	if !ok {
 		return tcpip.ErrUnknownProtocol
 	}
@@ -56,8 +62,8 @@ func (d *transportDemuxer) registerBroadcastEndpoint(protocol tcpip.TransportPro
 	return nil
 }
 
-func (d *transportDemuxer) unregisterBroadcastEndpoint(protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) {
-	eps, ok := d.protocol[protocol]
+func (d *transportDemuxer) unregisterBroadcastEndpoint(netProto tcpip.NetworkProtocolNumber, protocol tcpip.TransportProtocolNumber, ep TransportEndpoint) {
+	eps, ok := d.protocol[protocolIDs{netProto, protocol}]
 	if !ok {
 		return
 	}
@@ -70,10 +76,21 @@ func (d *transportDemuxer) unregisterBroadcastEndpoint(protocol tcpip.TransportP
 
 // registerEndpoint registers the given endpoint with the dispatcher such that
 // packets that match the endpoint ID are delivered to it.
-func (d *transportDemuxer) registerEndpoint(protocol tcpip.TransportProtocolNumber, id TransportEndpointID, ep TransportEndpoint) error {
-	eps, ok := d.protocol[protocol]
+func (d *transportDemuxer) registerEndpoint(netProtos []tcpip.NetworkProtocolNumber, protocol tcpip.TransportProtocolNumber, id TransportEndpointID, ep TransportEndpoint) error {
+	for i, n := range netProtos {
+		if err := d.singleRegisterEndpoint(n, protocol, id, ep); err != nil {
+			d.unregisterEndpoint(netProtos[:i], protocol, id)
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (d *transportDemuxer) singleRegisterEndpoint(netProto tcpip.NetworkProtocolNumber, protocol tcpip.TransportProtocolNumber, id TransportEndpointID, ep TransportEndpoint) error {
+	eps, ok := d.protocol[protocolIDs{netProto, protocol}]
 	if !ok {
-		return tcpip.ErrUnknownProtocol
+		return nil
 	}
 
 	eps.mu.Lock()
@@ -90,22 +107,20 @@ func (d *transportDemuxer) registerEndpoint(protocol tcpip.TransportProtocolNumb
 
 // unregisterEndpoint unregisters the endpoint with the given id such that it
 // won't receive any more packets.
-func (d *transportDemuxer) unregisterEndpoint(protocol tcpip.TransportProtocolNumber, id TransportEndpointID) {
-	eps, ok := d.protocol[protocol]
-	if !ok {
-		return
+func (d *transportDemuxer) unregisterEndpoint(netProtos []tcpip.NetworkProtocolNumber, protocol tcpip.TransportProtocolNumber, id TransportEndpointID) {
+	for _, n := range netProtos {
+		if eps, ok := d.protocol[protocolIDs{n, protocol}]; ok {
+			eps.mu.Lock()
+			delete(eps.endpoints, id)
+			eps.mu.Unlock()
+		}
 	}
-
-	eps.mu.Lock()
-	defer eps.mu.Unlock()
-
-	delete(eps.endpoints, id)
 }
 
 // deliverPacket attempts to deliver the given packet. Returns true if it found
 // an endpoint, false otherwise.
-func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProtocolNumber, v buffer.View, id TransportEndpointID) bool {
-	eps, ok := d.protocol[protocol]
+func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProtocolNumber, vv *buffer.VectorisedView, id TransportEndpointID) bool {
+	eps, ok := d.protocol[protocolIDs{r.NetProto, protocol}]
 	if !ok {
 		return false
 	}
@@ -115,15 +130,14 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 
 	if len(eps.broadcastEndpoints) > 0 {
 		for ep := range eps.broadcastEndpoints {
-			ep.HandlePacket(r, id, v)
+			ep.HandlePacket(r, id, vv)
 		}
 		return true
 	}
 
 	// Try to find a match with the id as provided.
 	if ep := eps.endpoints[id]; ep != nil {
-		fmt.Println("match with the id as provided")
-		ep.HandlePacket(r, id, v)
+		ep.HandlePacket(r, id, vv)
 		return true
 	}
 
@@ -132,8 +146,7 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 
 	nid.LocalAddress = ""
 	if ep := eps.endpoints[nid]; ep != nil {
-		fmt.Println("match with the id minus the local address")
-		ep.HandlePacket(r, id, v)
+		ep.HandlePacket(r, id, vv)
 		return true
 	}
 
@@ -142,16 +155,14 @@ func (d *transportDemuxer) deliverPacket(r *Route, protocol tcpip.TransportProto
 	nid.RemoteAddress = ""
 	nid.RemotePort = 0
 	if ep := eps.endpoints[nid]; ep != nil {
-		fmt.Println("match with the id minus the remote part")
-		ep.HandlePacket(r, id, v)
+		ep.HandlePacket(r, id, vv)
 		return true
 	}
 
 	// Try to find a match with only the local port.
 	nid.LocalAddress = ""
 	if ep := eps.endpoints[nid]; ep != nil {
-		fmt.Println("match with onlyt the local port")
-		ep.HandlePacket(r, id, v)
+		ep.HandlePacket(r, id, vv)
 		return true
 	}
 

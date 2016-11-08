@@ -6,6 +6,7 @@ package stack
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,7 @@ type NIC struct {
 	primary        map[tcpip.NetworkProtocolNumber]*ilist.List
 	endpoints      map[NetworkEndpointID]*referencedNetworkEndpoint
 	multicast      map[NetworkEndpointID][]NetworkEndpointID
+	subnets        []tcpip.Subnet
 	linkAddrCache  map[tcpip.Address]linkAddrEntry
 	linkAddrLookup map[tcpip.NetworkProtocolNumber]tcpip.LinkAddressLookupFunc
 }
@@ -173,15 +175,38 @@ func (n *NIC) AddAddress(protocol tcpip.NetworkProtocolNumber, addr tcpip.Addres
 func (n *NIC) AddMulticastAddress(multicast, addr tcpip.Address) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
 	id := NetworkEndpointID{addr}
 	if _, found := n.endpoints[id]; !found {
 		return tcpip.ErrBadLocalAddress
 	}
 	multiID := NetworkEndpointID{multicast}
 	n.multicast[multiID] = append(n.multicast[multiID], id)
-
 	return nil
+}
+
+// AddSubnet adds a new subnet to n, so that it starts accepting packets
+// targeted at the given address and network protocol.
+func (n *NIC) AddSubnet(protocol tcpip.NetworkProtocolNumber, subnet tcpip.Subnet) {
+	n.mu.Lock()
+	n.subnets = append(n.subnets, subnet)
+	n.mu.Unlock()
+}
+
+// Subnets returns the Subnets associated with this NIC.
+func (n *NIC) Subnets() []tcpip.Subnet {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	sns := make([]tcpip.Subnet, 0, len(n.subnets)+len(n.endpoints))
+	for nid := range n.endpoints {
+		sn, err := tcpip.NewSubnet(nid.LocalAddress, tcpip.AddressMask(strings.Repeat("\xff", len(nid.LocalAddress))))
+		if err != nil {
+			// This should never happen as the mask has been carefully crafted to
+			// match the address.
+			panic("Invalid endpoint subnet: " + err.Error())
+		}
+		sns = append(sns, sn)
+	}
+	return append(sns, n.subnets...)
 }
 
 func (n *NIC) removeEndpointLocked(r *referencedNetworkEndpoint) {
@@ -224,26 +249,26 @@ func (n *NIC) RemoveAddress(addr tcpip.Address) error {
 	return nil
 }
 
-func (n *NIC) deliverMulticastPacket(v buffer.View) {
-}
-
 // DeliverNetworkPacket finds the appropriate network protocol endpoint and
 // hands the packet over for further processing. This function is called when
 // the NIC receives a packet from the physical interface.
-func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, v buffer.View) {
+// Note that the ownership of the slice backing vv is retained by the caller.
+// This rule applies only to the slice itself, not to the items of the slice;
+// the ownership of the items is not retained by the caller.
+func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, vv *buffer.VectorisedView) {
 	netProto, ok := n.stack.networkProtocols[protocol]
 	if !ok {
 		atomic.AddUint64(&n.stack.stats.UnknownProtocolRcvdPackets, 1)
 		return
 	}
 
-	if len(v) < netProto.proto.MinimumPacketSize() {
-		fmt.Printf("nic.go: len(v)=%d < netProto.MinimumPacketSize()=%d\n", len(v), netProto.proto.MinimumPacketSize())
+	if len(vv.First()) < netProto.proto.MinimumPacketSize() {
+		fmt.Printf("nic.go: len(v)=%d < netProto.MinimumPacketSize()=%d\n", len(vv.First()), netProto.proto.MinimumPacketSize())
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
 
-	src, dst := netProto.proto.ParseAddresses(v)
+	src, dst := netProto.proto.ParseAddresses(vv.First())
 	fmt.Printf("DeliverNetworkPacket: dst=%v\n", dst)
 	id := NetworkEndpointID{dst}
 
@@ -296,14 +321,14 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tc
 	if ref != nil {
 		r.LocalAddress = dst
 		r.ref = ref
-		ref.ep.HandlePacket(&r, v)
+		ref.ep.HandlePacket(&r, vv)
 		ref.decRef()
 	} else if len(multirefs) > 0 {
 		for _, ref := range multirefs {
 			dst := ref.ep.ID().LocalAddress
 			r.ref = ref
 			r.LocalAddress = dst
-			ref.ep.HandlePacket(&r, v)
+			ref.ep.HandlePacket(&r, vv)
 			ref.decRef()
 		}
 	} else {
@@ -313,7 +338,7 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tc
 
 // DeliverTransportPacket delivers the packets to the appropriate transport
 // protocol endpoint.
-func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, v buffer.View) {
+func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, vv *buffer.VectorisedView) {
 	fmt.Printf("DeliverTransportPacket, protocol=%v\n", protocol)
 	state, ok := n.stack.transportProtocols[protocol]
 	if !ok {
@@ -322,13 +347,13 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 	}
 
 	transProto := state.proto
-	if len(v) < transProto.MinimumPacketSize() {
-		fmt.Printf("nic.go: len(v)=%d < transProto.MinimumPacketSize()=%d\n", len(v), transProto.MinimumPacketSize())
+	if len(vv.First()) < transProto.MinimumPacketSize() {
+		fmt.Printf("nic.go: len(v)=%d < transProto.MinimumPacketSize()=%d\n", len(vv.First()), transProto.MinimumPacketSize())
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
 		return
 	}
 
-	srcPort, dstPort, err := transProto.ParsePorts(v)
+	srcPort, dstPort, err := transProto.ParsePorts(vv.First())
 	if err != nil {
 		fmt.Printf("nic.go: could not ParsePorts: %v\n", err)
 		atomic.AddUint64(&n.stack.stats.MalformedRcvdPackets, 1)
@@ -336,21 +361,23 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 	}
 
 	id := TransportEndpointID{dstPort, r.LocalAddress, srcPort, r.RemoteAddress}
-	if n.demux.deliverPacket(r, protocol, v, id) ||
-		n.stack.demux.deliverPacket(r, protocol, v, id) {
+	if n.demux.deliverPacket(r, protocol, vv, id) {
+		return
+	}
+	if n.stack.demux.deliverPacket(r, protocol, vv, id) {
 		return
 	}
 
 	// Try to deliver to per-stack default handler.
 	if state.defaultHandler != nil {
-		if state.defaultHandler(r, id, v) {
+		if state.defaultHandler(r, id, vv) {
 			return
 		}
 	}
 
 	// We could not find an appropriate destination for this packet, so
 	// deliver it to the global handler.
-	transProto.HandleUnknownDestinationPacket(r, id, v)
+	transProto.HandleUnknownDestinationPacket(r, id, vv)
 }
 
 // ID returns the identifier of n.
@@ -383,16 +410,24 @@ func newReferencedNetworkEndpoint(ep NetworkEndpoint, protocol tcpip.NetworkProt
 	}
 }
 
+// decRef decrements the ref count and cleans up the endpoint once it reaches
+// zero.
 func (r *referencedNetworkEndpoint) decRef() {
 	if atomic.AddInt32(&r.refs, -1) == 0 {
 		r.nic.removeEndpoint(r)
 	}
 }
 
+// incRef increments the ref count. It must only be called when the caller is
+// known to be holding a reference to the endpoint, otherwise tryIncRef should
+// be used.
 func (r *referencedNetworkEndpoint) incRef() {
 	atomic.AddInt32(&r.refs, 1)
 }
 
+// tryIncRef attempts to increment the ref count from n to n+1, but only if n is
+// not zero. That is, it will increment the count if the endpoint is still
+// alive, and do nothing if it has already been clean up.
 func (r *referencedNetworkEndpoint) tryIncRef() bool {
 	for {
 		v := atomic.LoadInt32(&r.refs)

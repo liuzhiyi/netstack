@@ -23,7 +23,7 @@ const (
 type endpoint struct {
 	nicid   tcpip.NICID
 	linkEP  stack.LinkEndpoint
-	handler func(*stack.Route, buffer.View) bool
+	handler func(*stack.Route, stack.TransportEndpointID, *buffer.VectorisedView) bool
 	stack   *stack.Stack
 }
 
@@ -51,8 +51,8 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 	panic("arp.WritePacket TODO")
 }
 
-func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
-	h := header.ARP(v)
+func (e *endpoint) HandlePacket(r *stack.Route, vv *buffer.VectorisedView) {
+	h := header.ARP(vv.First())
 	if !h.IsValid() {
 		return
 	}
@@ -68,11 +68,12 @@ func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
 		copy(h.HardwareAddressSender(), r.LocalLinkAddress[:])
 		copy(h.ProtocolAddressSender(), h.ProtocolAddressTarget())
 		hdr := buffer.NewPrependable(int(e.linkEP.MaxHeaderLength()))
-		e.linkEP.WritePacket(r, &hdr, v, ProtocolNumber)
+		e.linkEP.WritePacket(r, &hdr, vv.First(), ProtocolNumber)
 	}
 
 	if e.handler != nil {
-		e.handler(r, v)
+		// TODO: TransportEndpointID
+		e.handler(r, stack.TransportEndpointID{}, vv)
 	}
 }
 
@@ -112,8 +113,8 @@ type lookup struct {
 }
 
 // handler is designed to be used as a closure to SetNetworkProtocolHandler.
-func (l *lookup) handler(r *stack.Route, v buffer.View) bool {
-	h := header.ARP(v)
+func (l *lookup) handler(r *stack.Route, id stack.TransportEndpointID, vv *buffer.VectorisedView) bool {
+	h := header.ARP(vv.First())
 	localAddr := tcpip.Address(h.ProtocolAddressTarget())
 	nic := l.stack.CheckLocalAddress(0, localAddr)
 	fmt.Printf("arp: adding %x/%s to cache\n", h.HardwareAddressSender(), tcpip.Address(h.ProtocolAddressSender()))

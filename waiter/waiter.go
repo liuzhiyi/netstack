@@ -73,6 +73,9 @@ type Waitable interface {
 	// Readiness returns what the object is currently ready for. If it's
 	// not ready for a desired purpose, the caller may use EventRegister and
 	// EventUnregister to get notifications once the object becomes ready.
+	//
+	// Implementations should allow for events like EventHUp and EventErr
+	// to be returned regardless of whether they are in the input EventMask.
 	Readiness(mask EventMask) EventMask
 
 	// EventRegister registers the given waiter entry to receive
@@ -107,24 +110,24 @@ type Entry struct {
 	ilist.Entry
 }
 
-// NewChannelEntry initializes a new Entry that does a non-blocking write of nil
-// to an interface{} channel when the callback is called. It returns the new
-// Entry instance and the channel being used.
+// NewChannelEntry initializes a new Entry that does a non-blocking write to a
+// struct{} channel when the callback is called. It returns the new Entry
+// instance and the channel being used.
 //
 // If a channel isn't specified (i.e., if "c" is nil), then NewChannelEntry
 // allocates a new channel.
-func NewChannelEntry(c chan interface{}) (Entry, chan interface{}) {
+func NewChannelEntry(c chan struct{}) (Entry, chan struct{}) {
 	if c == nil {
 		// TODO: Consider a pool.
-		c = make(chan interface{}, 1)
+		c = make(chan struct{}, 1)
 	}
 
 	return Entry{
 		Context: c,
 		Callback: func(e *Entry) {
-			ch := e.Context.(chan interface{})
+			ch := e.Context.(chan struct{})
 			select {
-			case ch <- nil:
+			case ch <- struct{}{}:
 			default:
 			}
 		},

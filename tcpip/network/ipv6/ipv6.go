@@ -99,16 +99,16 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 
 // HandlePacket is called by the link layer when new ipv6 packets arrive for
 // this endpoint.
-func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
+func (e *endpoint) HandlePacket(r *stack.Route, vv *buffer.VectorisedView) {
 	fmt.Printf("ipv6.HandlePacket\n")
-	h := header.IPv6(v)
-	if !h.IsValid() {
+	h := header.IPv6(vv.First())
+	if !h.IsValid(vv.Size()) {
 		return
 	}
 
-	v.TrimFront(header.IPv6MinimumSize)
-	v.CapLength(int(h.PayloadLength()))
-	e.dispatcher.DeliverTransportPacket(r, tcpip.TransportProtocolNumber(h.NextHeader()), v)
+	vv.TrimFront(header.IPv6MinimumSize)
+	vv.CapLength(int(h.PayloadLength()))
+	e.dispatcher.DeliverTransportPacket(r, tcpip.TransportProtocolNumber(h.NextHeader()), vv)
 }
 
 type protocol struct{}

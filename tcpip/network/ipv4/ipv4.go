@@ -118,9 +118,9 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr *buffer.Prependable, payload 
 
 // HandlePacket is called by the link layer when new ipv4 packets arrive for
 // this endpoint.
-func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
-	h := header.IPv4(v)
-	if !h.IsValid() {
+func (e *endpoint) HandlePacket(r *stack.Route, vv *buffer.VectorisedView) {
+	h := header.IPv4(vv.First())
+	if !h.IsValid(vv.Size()) {
 		return
 	}
 
@@ -131,9 +131,9 @@ func (e *endpoint) HandlePacket(r *stack.Route, v buffer.View) {
 
 	hlen := int(h.HeaderLength())
 	tlen := int(h.TotalLength())
-	v.TrimFront(hlen)
-	v.CapLength(tlen - hlen)
-	e.dispatcher.DeliverTransportPacket(r, tcpip.TransportProtocolNumber(h.Protocol()), v)
+	vv.TrimFront(hlen)
+	vv.CapLength(tlen - hlen)
+	e.dispatcher.DeliverTransportPacket(r, tcpip.TransportProtocolNumber(h.Protocol()), vv)
 }
 
 type protocol struct{}

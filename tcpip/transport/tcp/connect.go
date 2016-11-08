@@ -340,14 +340,6 @@ func (e *endpoint) protocolMainLoop(passive bool) error {
 		e.completeWorker()
 	}()
 
-	if err := e.route.FindLinkAddr(true); err != nil {
-		e.mu.Lock()
-		e.state = stateError
-		e.hardError = err
-		e.mu.Unlock()
-		return err
-	}
-
 	if !passive {
 		// This is an active connection, so we must initiate the 3-way
 		// handshake, and then inform potential waiters about its

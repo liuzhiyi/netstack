@@ -41,7 +41,7 @@ type TransportEndpointID struct {
 type TransportEndpoint interface {
 	// HandlePacket is called by the stack when new packets arrive to
 	// this transport endpoint.
-	HandlePacket(r *Route, id TransportEndpointID, v buffer.View)
+	HandlePacket(r *Route, id TransportEndpointID, vv *buffer.VectorisedView)
 }
 
 // TransportProtocol is the interface that needs to be implemented by transport
@@ -65,7 +65,7 @@ type TransportProtocol interface {
 	// HandleUnknownDestinationPacket handles packets targeted at this
 	// protocol but that don't match any existing endpoint. For example,
 	// it is targeted at a port that have no listeners.
-	HandleUnknownDestinationPacket(r *Route, id TransportEndpointID, v buffer.View)
+	HandleUnknownDestinationPacket(r *Route, id TransportEndpointID, vv *buffer.VectorisedView)
 }
 
 // TransportDispatcher contains the methods used by the network stack to deliver
@@ -74,7 +74,7 @@ type TransportProtocol interface {
 type TransportDispatcher interface {
 	// DeliverTransportPacket delivers the packets to the appropriate
 	// transport protocol endpoint.
-	DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, v buffer.View)
+	DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, vv *buffer.VectorisedView)
 }
 
 // NetworkEndpoint is the interface that needs to be implemented by endpoints
@@ -103,10 +103,7 @@ type NetworkEndpoint interface {
 
 	// HandlePacket is called by the link layer when new packets arrive to
 	// this network endpoint.
-	HandlePacket(r *Route, v buffer.View)
-}
-
-type NeighborDiscovery interface {
+	HandlePacket(r *Route, vv *buffer.VectorisedView)
 }
 
 // NetworkProtocol is the interface that needs to be implemented by network
@@ -127,6 +124,7 @@ type NetworkProtocol interface {
 	// NewEndpoint creates a new endpoint of this protocol.
 	NewEndpoint(cfg NetworkEndpointConfig) (NetworkEndpoint, error)
 
+	// NewLinkAddressLookup TODO document
 	NewLinkAddressLookup(s *Stack, nicID tcpip.NICID, linkEP LinkEndpoint) tcpip.LinkAddressLookupFunc
 }
 
@@ -136,7 +134,7 @@ type NetworkEndpointConfig struct {
 	Dispatcher     TransportDispatcher
 	Sender         LinkEndpoint
 	Stack          *Stack
-	DefaultHandler func(*Route, buffer.View) bool
+	DefaultHandler func(*Route, TransportEndpointID, *buffer.VectorisedView) bool
 }
 
 // NetworkDispatcher contains the methods used by the network stack to deliver
@@ -145,7 +143,7 @@ type NetworkEndpointConfig struct {
 type NetworkDispatcher interface {
 	// DeliverNetworkPacket finds the appropriate network protocol
 	// endpoint and hands the packet over for further processing.
-	DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, v buffer.View)
+	DeliverNetworkPacket(linkEP LinkEndpoint, linkAddr, srcLinkAddr tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, vv *buffer.VectorisedView)
 }
 
 // LinkEndpoint is the interface implemented by data link layer protocols (e.g.,
@@ -172,6 +170,7 @@ type LinkEndpoint interface {
 	// dispatcher of the stack.
 	Attach(dispatcher NetworkDispatcher)
 
+	// LinkAddress TODO
 	LinkAddress() tcpip.LinkAddress
 }
 
